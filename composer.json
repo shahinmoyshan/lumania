@@ -1,0 +1,17 @@
+{
+    "name": "shahinmoyshan/lumina",
+    "description": "A document AI assistant that uses RAG logic to provide intelligent responses.",
+    "license": "MIT",
+    "autoload": {
+        "psr-4": {
+            "Lumina\\": "src/"
+        },
+        "files": []
+    },
+    "authors": [
+        {
+            "name": "Shahin Moyshan",
+            "email": "shahin.moyshan2@gmail.com"
+        }
+    ]
+}
