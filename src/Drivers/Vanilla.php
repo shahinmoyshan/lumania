@@ -9,12 +9,101 @@ class Vanilla implements AIContract
     private array $chunks;
     private array $stopWords;
     private array $questionWords;
+    private array $entityPatterns;
+    private array $responseTemplates;
+    private array $transitionPhrases;
+
+    // Scoring weights
+    private const KEYWORD_WEIGHT = 0.38;
+    private const BIGRAM_WEIGHT = 0.18;
+    private const TRIGRAM_WEIGHT = 0.14;
+    private const SEMANTIC_WEIGHT = 0.18;
+    private const ENTITY_WEIGHT = 0.08;
+    private const POSITION_WEIGHT = 0.04;
+
+    // Response configuration
+    private const MIN_CONFIDENCE_THRESHOLD = 0.10;
+    private const HIGH_CONFIDENCE = 75;
+    private const MEDIUM_CONFIDENCE = 45;
+    private const MAX_SENTENCE_LENGTH = 250;
+    private const MIN_SENTENCE_LENGTH = 15;
+
 
     public function __construct(array $chunks)
     {
         $this->chunks = $chunks;
+        $this->initializeStopWords();
+        $this->initializeQuestionWords();
+        $this->initializeEntityPatterns();
+        $this->initializeResponseTemplates();
+        $this->initializeTransitionPhrases();
+    }
 
-        // Common stop words to filter out
+
+    /**
+     * Generate an intelligent AI response to a user question
+     * 
+     * @param string $question The user's question
+     * @param array $context Additional context chunks
+     * @return string AI-generated response
+     */
+    public function ask(string $question, array $context = []): string
+    {
+        // Normalize and preprocess question
+        $normalizedQuestion = $this->normalizeQuestion($question);
+
+        // Merge and flatten all available chunks
+        $allChunks = $this->flattenChunks($context);
+
+        if (empty($allChunks)) {
+            return $this->generateNoInfoResponse($question);
+        }
+
+        // Extract question intent and classify type
+        $questionAnalysis = $this->analyzeQuestion($normalizedQuestion);
+
+        // Extract key entities from question
+        $entities = $this->extractEntities($normalizedQuestion);
+
+        // Rank all chunks by multi-factor relevance
+        $rankedChunks = $this->rankChunksAdvanced(
+            $normalizedQuestion,
+            $allChunks,
+            $entities,
+            $questionAnalysis
+        );
+
+        // Check if we have sufficient relevant information (use more lenient threshold)
+        // Allow chunks with lower scores if we have ranked results
+        if (empty($rankedChunks)) {
+            return $this->generateNoInfoResponse($question);
+        }
+
+        // Only reject if top score is extremely low (more lenient than before)
+        if ($rankedChunks[0]['score'] < 0.05) {
+            return $this->generateNoInfoResponse($question);
+        }
+
+        // Extract and synthesize answer from top-ranked chunks
+        $topChunks = $this->selectOptimalChunks($rankedChunks, $questionAnalysis);
+
+        // Generate contextually-aware, natural response
+        return $this->generateIntelligentResponse(
+            $question,
+            $normalizedQuestion,
+            $questionAnalysis,
+            $topChunks,
+            $entities
+        );
+    }
+
+
+    // ==========================================
+    // INITIALIZATION METHODS
+    // ==========================================
+
+    private function initializeStopWords(): void
+    {
         $this->stopWords = [
             'the',
             'is',
@@ -73,10 +162,29 @@ class Vanilla implements AIContract
             'again',
             'further',
             'then',
-            'once'
+            'once',
+            'here',
+            'there',
+            'all',
+            'both',
+            'each',
+            'few',
+            'more',
+            'most',
+            'other',
+            'some',
+            'such',
+            'only',
+            'own',
+            'same',
+            'than',
+            'too',
+            'very'
         ];
+    }
 
-        // Question word patterns
+    private function initializeQuestionWords(): void
+    {
         $this->questionWords = [
             'what',
             'where',
@@ -85,81 +193,472 @@ class Vanilla implements AIContract
             'why',
             'how',
             'which',
+            'whose',
             'does',
             'do',
             'is',
             'are',
             'can',
+            'could',
+            'would',
+            'should',
             'tell',
             'describe',
             'explain',
             'list',
             'show',
             'find',
-            'get'
+            'get',
+            'give',
+            'provide',
+            'define',
+            'compare',
+            'analyze',
+            'identify'
+        ];
+    }
+
+    private function initializeEntityPatterns(): void
+    {
+        $this->entityPatterns = [
+            'email' => '/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/',
+            'phone' => '/\b(?:\+?1[-.\s]?)?\(?([0-9]{3})\)?[-.\s]?([0-9]{3})[-.\s]?([0-9]{4})\b/',
+            'url' => '/\b(?:https?:\/\/)?(?:www\.)?[a-zA-Z0-9-]+\.[a-zA-Z]{2,}(?:\/[^\s]*)?\b/',
+            'price' => '/\$\s*\d{1,3}(?:,\d{3})*(?:\.\d{2})?|\d{1,3}(?:,\d{3})*(?:\.\d{2})?\s*(?:dollars?|USD)/i',
+            'date' => '/\b\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4}\b|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}\b/i',
+            'percentage' => '/\b\d+(?:\.\d+)?%/',
+            'number' => '/\b\d+(?:,\d{3})*(?:\.\d+)?\b/',
+            'organization' => '/\b(?:[A-Z][a-z]+\s+){0,2}(?:Inc|LLC|Corp|Ltd|Company|Corporation|Group)\b/',
+            'proper_noun' => '/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b/',
+        ];
+    }
+
+    private function initializeResponseTemplates(): void
+    {
+        $this->responseTemplates = [
+            'definition' => [
+                'high' => [
+                    '%s is %s',
+                    '%s refers to %s',
+                    'In essence, %s represents %s',
+                    '%s can be defined as %s',
+                ],
+                'medium' => [
+                    'Based on the available information, %s appears to be %s',
+                    'From what I understand, %s is %s',
+                    'The documentation suggests that %s is %s',
+                ],
+                'low' => [
+                    'While I have limited information, it seems %s relates to %s',
+                    'From the fragments available, %s might be %s',
+                ]
+            ],
+            'explanation' => [
+                'high' => [
+                    'Here\'s how this works:',
+                    'Let me break this down for you:',
+                    'To explain this clearly:',
+                ],
+                'medium' => [
+                    'From what I can gather:',
+                    'Based on the documentation:',
+                    'Here\'s what I understand:',
+                ],
+                'low' => [
+                    'I found some relevant information:',
+                    'While my understanding is partial:',
+                ]
+            ],
+        ];
+    }
+
+    private function initializeTransitionPhrases(): void
+    {
+        $this->transitionPhrases = [
+            'addition' => [
+                'Additionally,',
+                'Furthermore,',
+                'Moreover,',
+                'In addition,',
+                'What\'s more,',
+                'Beyond that,',
+                'On top of that,',
+                'Also worth noting,'
+            ],
+            'contrast' => [
+                'However,',
+                'On the other hand,',
+                'Conversely,',
+                'That said,',
+                'Nevertheless,',
+                'In contrast,',
+                'Alternatively,'
+            ],
+            'emphasis' => [
+                'Importantly,',
+                'Notably,',
+                'It\'s worth emphasizing that',
+                'Particularly significant is',
+                'A key point is'
+            ],
+            'example' => [
+                'For instance,',
+                'For example,',
+                'To illustrate,',
+                'Specifically,',
+                'In particular,',
+                'Such as',
+                'Like'
+            ],
+            'conclusion' => [
+                'In summary,',
+                'To sum up,',
+                'Overall,',
+                'In conclusion,',
+                'Ultimately,',
+                'In essence,'
+            ],
+        ];
+    }
+
+
+    // ==========================================
+    // QUESTION ANALYSIS METHODS
+    // ==========================================
+
+    /**
+     * Normalize question text for better processing
+     */
+    private function normalizeQuestion(string $question): string
+    {
+        // Trim whitespace
+        $question = trim($question);
+
+        // Normalize whitespace
+        $question = preg_replace('/\s+/', ' ', $question);
+
+        // Remove extra punctuation
+        $question = preg_replace('/[?!.]+$/', '', $question);
+
+        // Expand common contractions
+        $contractions = [
+            "what's" => "what is",
+            "where's" => "where is",
+            "who's" => "who is",
+            "how's" => "how is",
+            "can't" => "cannot",
+            "won't" => "will not",
+            "don't" => "do not",
+            "doesn't" => "does not",
+            "isn't" => "is not",
+            "aren't" => "are not",
+        ];
+
+        $question = str_ireplace(array_keys($contractions), array_values($contractions), $question);
+
+        return $question;
+    }
+
+    /**
+     * Comprehensive question analysis
+     */
+    private function analyzeQuestion(string $question): array
+    {
+        $questionLower = strtolower($question);
+
+        return [
+            'type' => $this->detectQuestionType($questionLower),
+            'intent' => $this->detectIntent($questionLower),
+            'complexity' => $this->assessComplexity($question),
+            'sentiment' => $this->detectSentiment($questionLower),
+            'focus_words' => $this->extractFocusWords($question),
+            'is_comparative' => $this->isComparativeQuestion($questionLower),
+            'requires_list' => $this->requiresListResponse($questionLower),
+            'temporal' => $this->hasTemporalElement($questionLower),
         ];
     }
 
     /**
-     * Generate AI-like response to question
+     * Detect detailed question type
      */
-    public function ask(string $question, array $context = []): string
+    private function detectQuestionType(string $question): string
     {
-        // Merge provided context with chunks
-        $allChunks = $this->flattenChunks($context);
+        // Check list patterns FIRST (before definition) to catch "what are X" questions
+        $listPatterns = [
+            '/^(?:list|show|name|give|provide|tell me)\s+(?:all|the|some)/i',
+            '/^what\s+are\s+(?:the|your|our|their|these|those)?\s*[a-z]+(?:ies|es|s)\b/i', // "what are the services", "what are services"
+            '/^what\s+(?:do|does)\s+(?:you|we|they|it)\s+(?:offer|provide|have|include)/i',
+            '/^(?:name|list|show)\s+(?:all|the|some|your|our)\s+[a-z]+(?:ies|es|s)?/i',
+        ];
 
-        if (empty($allChunks)) {
-            return $this->generateNoInfoResponse($question);
+        foreach ($listPatterns as $pattern) {
+            if (preg_match($pattern, $question)) {
+                return 'list';
+            }
         }
 
-        // Detect question type for appropriate response style
-        $questionType = $this->detectQuestionType($question);
+        $patterns = [
+            'comparison' => '/(?:difference|compare|versus|vs|better|worse|rather than)/i',
+            'location' => '/^where\s+(?:is|are|can|do)/i',
+            'time' => '/^when\s+(?:is|are|did|does|will|should)/i',
+            'person' => '/^who\s+(?:is|are|was|were|does)/i',
+            'quantity' => '/^how\s+(?:many|much|often|long|far)/i',
+            'method' => '/^how\s+(?:do|does|can|to|should)/i',
+            'reason' => '/^why\s+(?:is|are|do|does|did|should)/i',
+            'choice' => '/^(?:which|what)\s+(?:one|type|kind|option)/i',
+            'pricing' => '/\b(?:price|cost|pricing|fee|charge|rate|expensive|cheap)\b/i',
+            'contact' => '/\b(?:contact|email|phone|reach|address|call|message)\b/i',
+            'confirmation' => '/^(?:is|are|do|does|can|could|would|should|will)\s+/i',
+            'definition' => '/^(?:what|which)\s+(?:is|are|was|were|does|do)\s+(?:a|an|the)?\s*\w+/i',
+        ];
 
-        // Score and rank all chunks by relevance
-        $rankedChunks = $this->rankChunks($question, $allChunks);
-
-        if (empty($rankedChunks) || $rankedChunks[0]['score'] < 0.1) {
-            return $this->generateNoInfoResponse($question);
+        foreach ($patterns as $type => $pattern) {
+            if (preg_match($pattern, $question)) {
+                return $type;
+            }
         }
 
-        // Extract and synthesize answer from top chunks
-        $topChunks = array_slice($rankedChunks, 0, 3);
-
-        // Generate natural response based on question type
-        return $this->generateNaturalResponse($question, $questionType, $topChunks);
+        return 'general';
     }
 
     /**
-     * Flatten nested chunk arrays
+     * Detect user intent
+     */
+    private function detectIntent(string $question): string
+    {
+        $intentKeywords = [
+            'informational' => ['what', 'who', 'where', 'when', 'define', 'explain'],
+            'instructional' => ['how', 'guide', 'tutorial', 'steps', 'process'],
+            'navigational' => ['find', 'locate', 'search', 'where can i'],
+            'transactional' => ['buy', 'purchase', 'order', 'subscribe', 'sign up'],
+            'investigational' => ['why', 'reason', 'cause', 'because'],
+            'comparative' => ['compare', 'difference', 'versus', 'better', 'or'],
+        ];
+
+        foreach ($intentKeywords as $intent => $keywords) {
+            foreach ($keywords as $keyword) {
+                if (stripos($question, $keyword) !== false) {
+                    return $intent;
+                }
+            }
+        }
+
+        return 'general';
+    }
+
+    /**
+     * Assess question complexity
+     */
+    private function assessComplexity(string $question): string
+    {
+        $score = 0;
+
+        // Length factor
+        $wordCount = str_word_count($question);
+        if ($wordCount > 15)
+            $score += 2;
+        elseif ($wordCount > 10)
+            $score += 1;
+
+        // Multiple clauses
+        if (substr_count($question, ',') > 1)
+            $score += 1;
+        if (preg_match('/\b(and|or|but)\b/i', $question))
+            $score += 1;
+
+        // Technical terms or specific entities
+        if (preg_match('/[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+/', $question))
+            $score += 1;
+
+        // Multiple question words
+        $questionWordCount = 0;
+        foreach ($this->questionWords as $qw) {
+            if (stripos($question, $qw) !== false)
+                $questionWordCount++;
+        }
+        if ($questionWordCount > 2)
+            $score += 2;
+
+        if ($score >= 4)
+            return 'complex';
+        if ($score >= 2)
+            return 'moderate';
+        return 'simple';
+    }
+
+    /**
+     * Detect sentiment in question
+     */
+    private function detectSentiment(string $question): string
+    {
+        $positiveWords = ['good', 'great', 'excellent', 'best', 'better', 'like', 'love'];
+        $negativeWords = ['bad', 'poor', 'worst', 'worse', 'hate', 'dislike', 'problem', 'issue'];
+
+        $positiveCount = 0;
+        $negativeCount = 0;
+
+        foreach ($positiveWords as $word) {
+            if (stripos($question, $word) !== false)
+                $positiveCount++;
+        }
+
+        foreach ($negativeWords as $word) {
+            if (stripos($question, $word) !== false)
+                $negativeCount++;
+        }
+
+        if ($positiveCount > $negativeCount)
+            return 'positive';
+        if ($negativeCount > $positiveCount)
+            return 'negative';
+        return 'neutral';
+    }
+
+    /**
+     * Extract focus words (key entities/terms)
+     */
+    private function extractFocusWords(string $question): array
+    {
+        $focusWords = [];
+
+        // Proper nouns (capitalized words)
+        if (preg_match_all('/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b/', $question, $matches)) {
+            $focusWords = array_merge($focusWords, $matches[0]);
+        }
+
+        // Numbers
+        if (preg_match_all('/\b\d+(?:,\d{3})*(?:\.\d+)?\b/', $question, $matches)) {
+            $focusWords = array_merge($focusWords, $matches[0]);
+        }
+
+        // Technical terms (long words)
+        if (preg_match_all('/\b[a-z]{8,}\b/i', $question, $matches)) {
+            $focusWords = array_merge($focusWords, $matches[0]);
+        }
+
+        return array_unique($focusWords);
+    }
+
+    /**
+     * Check if question is comparative
+     */
+    private function isComparativeQuestion(string $question): bool
+    {
+        $comparativePatterns = [
+            '/\b(?:versus|vs\.?|compared to|compare|difference between)\b/i',
+            '/\b(?:better|worse|more|less|rather than|instead of)\b/i',
+            '/\bor\b.*\b(?:which|what)\b/i',
+        ];
+
+        foreach ($comparativePatterns as $pattern) {
+            if (preg_match($pattern, $question)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if question requires list response
+     */
+    private function requiresListResponse(string $question): bool
+    {
+        // Check for explicit list keywords
+        if (preg_match('/\b(?:list|all|every|each|multiple|various|several|types?|kinds?)\b/i', $question) === 1) {
+            return true;
+        }
+
+        // Check for "what are X" patterns (asking for a list of things)
+        if (preg_match('/^what\s+are\s+(?:the|your|our|their|these|those)?\s*[a-z]+(?:ies|es|s)?\??$/i', $question)) {
+            return true;
+        }
+
+        // Check for "what do/does X offer/provide/have/include"
+        if (preg_match('/^what\s+(?:do|does)\s+(?:you|we|they|it)\s+(?:offer|provide|have|include)/i', $question)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Check for temporal elements
+     */
+    private function hasTemporalElement(string $question): bool
+    {
+        return preg_match('/\b(?:when|time|date|year|month|day|recently|current|now|today|latest)\b/i', $question) === 1;
+    }
+
+
+    // ==========================================
+    // ENTITY EXTRACTION
+    // ==========================================
+
+    /**
+     * Extract named entities from text
+     */
+    private function extractEntities(string $text): array
+    {
+        $entities = [
+            'emails' => [],
+            'phones' => [],
+            'urls' => [],
+            'prices' => [],
+            'dates' => [],
+            'percentages' => [],
+            'numbers' => [],
+            'organizations' => [],
+            'proper_nouns' => [],
+        ];
+
+        foreach ($this->entityPatterns as $type => $pattern) {
+            if (preg_match_all($pattern, $text, $matches)) {
+                $entities[$type . 's'] = array_unique($matches[0]);
+            }
+        }
+
+        return array_filter($entities);
+    }
+
+
+    // ==========================================
+    // CHUNK PROCESSING
+    // ==========================================
+
+    /**
+     * Flatten nested chunk arrays recursively
      */
     private function flattenChunks(array $context): array
     {
         $flattened = [];
 
-        // Handle the chunks from constructor
+        // Process constructor chunks first (always prioritize these)
         if (!empty($this->chunks)) {
-            // Chunks might be nested in array(1) { [0] => array(...) }
-            $chunks = is_array($this->chunks[0] ?? null) && isset($this->chunks[0][0])
-                ? $this->chunks[0]
-                : $this->chunks;
-
-            foreach ($chunks as $chunk) {
-                if (isset($chunk['content'])) {
-                    $flattened[] = $chunk;
+            foreach ($this->chunks as $chunk) {
+                if (is_array($chunk) && isset($chunk['content']) && !empty($chunk['content'])) {
+                    $flattened[] = $this->normalizeChunk($chunk);
+                } elseif (is_array($chunk)) {
+                    // Handle nested arrays
+                    foreach ($chunk as $subChunk) {
+                        if (is_array($subChunk) && isset($subChunk['content']) && !empty($subChunk['content'])) {
+                            $flattened[] = $this->normalizeChunk($subChunk);
+                        }
+                    }
                 }
             }
         }
 
-        // Merge with provided context
+        // Process context chunks recursively (additional chunks passed in)
         foreach ($context as $item) {
             if (is_array($item)) {
-                if (isset($item['content'])) {
-                    $flattened[] = $item;
+                if (isset($item['content']) && !empty($item['content'])) {
+                    $flattened[] = $this->normalizeChunk($item);
                 } else {
-                    // Recursively flatten
+                    // Handle nested context arrays
                     foreach ($item as $subItem) {
-                        if (isset($subItem['content'])) {
-                            $flattened[] = $subItem;
+                        if (is_array($subItem) && isset($subItem['content']) && !empty($subItem['content'])) {
+                            $flattened[] = $this->normalizeChunk($subItem);
                         }
                     }
                 }
@@ -170,518 +669,1087 @@ class Vanilla implements AIContract
     }
 
     /**
-     * Detect question type to tailor response style
+     * Normalize chunk structure
      */
-    private function detectQuestionType(string $question): string
+    private function normalizeChunk(array $chunk): array
     {
-        $question = strtolower($question);
-
-        if (preg_match('/^(what|which)\s+(is|are|was|were)/', $question)) {
-            return 'definition';
-        }
-        if (preg_match('/^where/', $question)) {
-            return 'location';
-        }
-        if (preg_match('/^when/', $question)) {
-            return 'time';
-        }
-        if (preg_match('/^who/', $question)) {
-            return 'person';
-        }
-        if (preg_match('/^how\s+(much|many)/', $question)) {
-            return 'quantity';
-        }
-        if (preg_match('/^(how|can\s+you|tell\s+me|explain)/', $question)) {
-            return 'explanation';
-        }
-        if (preg_match('/^(list|show|give|provide)/', $question)) {
-            return 'list';
-        }
-        if (preg_match('/(price|cost|pricing|fee|charge)/', $question)) {
-            return 'pricing';
-        }
-        if (preg_match('/(contact|email|phone|reach|address)/', $question)) {
-            return 'contact';
-        }
-
-        return 'general';
+        return [
+            'content' => $chunk['content'] ?? '',
+            'source' => $chunk['source'] ?? 'unknown',
+            'metadata' => $chunk['metadata'] ?? [],
+            'timestamp' => $chunk['timestamp'] ?? null,
+        ];
     }
 
+
+    // ==========================================
+    // ADVANCED RANKING SYSTEM
+    // ==========================================
+
     /**
-     * Rank chunks by relevance to question
+     * Advanced multi-factor chunk ranking
      */
-    private function rankChunks(string $question, array $chunks): array
-    {
+    private function rankChunksAdvanced(
+        string $question,
+        array $chunks,
+        array $entities,
+        array $analysis
+    ): array {
         $ranked = [];
+        $questionTokens = $this->tokenize($question);
+        $questionBigrams = $this->extractNgrams($question, 2);
+        $questionTrigrams = $this->extractNgrams($question, 3);
 
-        foreach ($chunks as $chunk) {
-            $score = $this->calculateRelevanceScore($question, $chunk['content']);
+        foreach ($chunks as $index => $chunk) {
+            $content = $chunk['content'];
+            $contentTokens = $this->tokenize($content);
 
-            if ($score > 0) {
+            // Calculate multiple scoring factors
+            $scores = [
+                'keyword' => $this->calculateTFIDFScore($questionTokens, $contentTokens, $chunks),
+                'bigram' => $this->calculateNgramMatch($questionBigrams, $this->extractNgrams($content, 2)),
+                'trigram' => $this->calculateNgramMatch($questionTrigrams, $this->extractNgrams($content, 3)),
+                'semantic' => $this->calculateAdvancedSemanticSimilarity($questionTokens, $contentTokens),
+                'entity' => $this->calculateEntityMatchScore($entities, $content),
+                'position' => $this->calculatePositionScore($index, count($chunks)),
+            ];
+
+            // Context-aware score adjustment
+            $contextBoost = $this->calculateContextBoost($content, $analysis);
+
+            // Weighted final score
+            $finalScore = (
+                $scores['keyword'] * self::KEYWORD_WEIGHT +
+                $scores['bigram'] * self::BIGRAM_WEIGHT +
+                $scores['trigram'] * self::TRIGRAM_WEIGHT +
+                $scores['semantic'] * self::SEMANTIC_WEIGHT +
+                $scores['entity'] * self::ENTITY_WEIGHT +
+                $scores['position'] * self::POSITION_WEIGHT
+            ) * $contextBoost;
+
+            if ($finalScore > 0) {
                 $ranked[] = [
                     'chunk' => $chunk,
-                    'score' => $score,
-                    'sentences' => $this->extractSentences($chunk['content'])
+                    'score' => $finalScore,
+                    'scores_breakdown' => $scores,
+                    'sentences' => $this->extractSentences($content),
+                    'entities' => $this->extractEntities($content),
                 ];
             }
         }
 
-        // Sort by score descending
         usort($ranked, fn($a, $b) => $b['score'] <=> $a['score']);
 
         return $ranked;
     }
 
     /**
-     * Calculate semantic relevance score using multiple factors
+     * Calculate TF-IDF inspired score with plural/singular matching
      */
-    private function calculateRelevanceScore(string $question, string $content): float
+    private function calculateTFIDFScore(array $queryTokens, array $docTokens, array $allChunks): float
     {
-        $questionTokens = $this->tokenize($question);
-        $contentTokens = $this->tokenize($content);
-
-        if (empty($questionTokens) || empty($contentTokens)) {
+        if (empty($queryTokens) || empty($docTokens)) {
             return 0.0;
         }
 
-        // Factor 1: Keyword overlap (TF-IDF-like)
-        $keywordScore = $this->calculateKeywordOverlap($questionTokens, $contentTokens);
+        $score = 0.0;
+        $docTokenFreq = array_count_values($docTokens);
+        $totalDocs = count($allChunks);
+        $exactMatchBonus = 0.0;
 
-        // Factor 2: Bigram matching (phrase matching)
-        $bigramScore = $this->calculateBigramMatch($question, $content);
+        foreach ($queryTokens as $token) {
+            $tokenVariations = $this->getWordVariations($token);
+            $matched = false;
+            $tokenScore = 0.0;
 
-        // Factor 3: Semantic similarity (word proximity)
-        $semanticScore = $this->calculateSemanticSimilarity($questionTokens, $contentTokens);
+            // Check for exact matches first (highest priority)
+            if (isset($docTokenFreq[$token])) {
+                $tf = $docTokenFreq[$token] / count($docTokens);
 
-        // Factor 4: Question focus word boost
-        $focusScore = $this->calculateFocusWordBoost($question, $content);
+                // Inverse document frequency
+                $docsWithTerm = 0;
+                foreach ($allChunks as $chunk) {
+                    if (stripos($chunk['content'], $token) !== false) {
+                        $docsWithTerm++;
+                    }
+                }
 
-        // Weighted combination
-        return (
-            $keywordScore * 0.35 +
-            $bigramScore * 0.25 +
-            $semanticScore * 0.25 +
-            $focusScore * 0.15
-        );
+                $idf = $docsWithTerm > 0 ? log($totalDocs / max($docsWithTerm, 1)) : 0;
+                $tokenScore = $tf * (1 + $idf);
+                $exactMatchBonus += 0.2; // Boost for exact matches
+                $matched = true;
+            } else {
+                // Check for variations (plural/singular)
+                foreach ($tokenVariations as $variation) {
+                    if ($variation !== $token && isset($docTokenFreq[$variation])) {
+                        $tf = $docTokenFreq[$variation] / count($docTokens);
+
+                        // Inverse document frequency for variation
+                        $docsWithTerm = 0;
+                        foreach ($allChunks as $chunk) {
+                            if (stripos($chunk['content'], $variation) !== false) {
+                                $docsWithTerm++;
+                            }
+                        }
+
+                        $idf = $docsWithTerm > 0 ? log($totalDocs / max($docsWithTerm, 1)) : 0;
+                        $tokenScore = $tf * (1 + $idf) * 0.8; // Slight penalty for variation match
+                        $matched = true;
+                        break; // Use first variation match
+                    }
+                }
+            }
+
+            // Also check for substring matches (e.g., "service" in "services")
+            if (!$matched) {
+                foreach ($docTokenFreq as $docToken => $freq) {
+                    foreach ($tokenVariations as $variation) {
+                        if (stripos($docToken, $variation) !== false || stripos($variation, $docToken) !== false) {
+                            $tf = $freq / count($docTokens);
+                            $tokenScore = $tf * 0.5; // Lower score for substring match
+                            $matched = true;
+                            break 2;
+                        }
+                    }
+                }
+            }
+
+            if ($matched) {
+                $score += $tokenScore;
+            }
+        }
+
+        // Add exact match bonus
+        $finalScore = min(($score / max(count($queryTokens), 1)) + $exactMatchBonus, 1.0);
+
+        return $finalScore;
     }
 
     /**
-     * Calculate keyword overlap score
+     * Calculate n-gram matches
      */
-    private function calculateKeywordOverlap(array $questionTokens, array $contentTokens): float
+    private function calculateNgramMatch(array $queryNgrams, array $contentNgrams): float
     {
-        $intersection = array_intersect($questionTokens, $contentTokens);
-
-        if (empty($questionTokens)) {
+        if (empty($queryNgrams)) {
             return 0.0;
         }
 
-        $recall = count($intersection) / count($questionTokens);
-        $precision = count($intersection) / max(count($contentTokens), 1);
-
-        // F1 score
-        if ($recall + $precision == 0) {
-            return 0.0;
-        }
-
-        return 2 * ($precision * $recall) / ($precision + $recall);
+        $matches = count(array_intersect($queryNgrams, $contentNgrams));
+        return $matches / count($queryNgrams);
     }
 
     /**
-     * Calculate bigram (2-word phrase) matches
+     * Extract n-grams from text
      */
-    private function calculateBigramMatch(string $question, string $content): float
+    private function extractNgrams(string $text, int $n): array
     {
-        $questionBigrams = $this->extractBigrams($question);
-        $contentBigrams = $this->extractBigrams($content);
+        $tokens = $this->tokenize($text, false);
+        $ngrams = [];
 
-        if (empty($questionBigrams)) {
-            return 0.0;
+        for ($i = 0; $i <= count($tokens) - $n; $i++) {
+            $ngram = array_slice($tokens, $i, $n);
+            $ngrams[] = implode(' ', $ngram);
         }
 
-        $matches = count(array_intersect($questionBigrams, $contentBigrams));
-        return $matches / count($questionBigrams);
+        return $ngrams;
     }
 
     /**
-     * Calculate semantic similarity using word embeddings simulation
+     * Advanced semantic similarity using cosine similarity approach
      */
-    private function calculateSemanticSimilarity(array $questionTokens, array $contentTokens): float
+    private function calculateAdvancedSemanticSimilarity(array $tokens1, array $tokens2): float
     {
-        // Simulate semantic similarity by checking for synonyms and related terms
-        $semanticMatches = 0;
-        $synonymMap = $this->getSynonymMap();
+        if (empty($tokens1) || empty($tokens2)) {
+            return 0.0;
+        }
 
-        foreach ($questionTokens as $qToken) {
-            foreach ($contentTokens as $cToken) {
-                if ($qToken === $cToken) {
-                    $semanticMatches += 1.0;
-                } elseif (isset($synonymMap[$qToken]) && in_array($cToken, $synonymMap[$qToken])) {
-                    $semanticMatches += 0.7;
-                } elseif ($this->areSimilarWords($qToken, $cToken)) {
-                    $semanticMatches += 0.5;
+        $vector1 = $this->createWordVector($tokens1);
+        $vector2 = $this->createWordVector($tokens2);
+
+        return $this->cosineSimilarity($vector1, $vector2);
+    }
+
+    /**
+     * Create word frequency vector
+     */
+    private function createWordVector(array $tokens): array
+    {
+        $vector = [];
+        $counts = array_count_values($tokens);
+
+        foreach ($counts as $word => $count) {
+            // Use log normalization
+            $vector[$word] = 1 + log($count);
+        }
+
+        return $vector;
+    }
+
+    /**
+     * Calculate cosine similarity between vectors
+     */
+    private function cosineSimilarity(array $vector1, array $vector2): float
+    {
+        $allKeys = array_unique(array_merge(array_keys($vector1), array_keys($vector2)));
+
+        $dotProduct = 0.0;
+        $magnitude1 = 0.0;
+        $magnitude2 = 0.0;
+
+        foreach ($allKeys as $key) {
+            $val1 = $vector1[$key] ?? 0;
+            $val2 = $vector2[$key] ?? 0;
+
+            $dotProduct += $val1 * $val2;
+            $magnitude1 += $val1 * $val1;
+            $magnitude2 += $val2 * $val2;
+        }
+
+        $magnitude1 = sqrt($magnitude1);
+        $magnitude2 = sqrt($magnitude2);
+
+        if ($magnitude1 == 0 || $magnitude2 == 0) {
+            return 0.0;
+        }
+
+        return $dotProduct / ($magnitude1 * $magnitude2);
+    }
+
+    /**
+     * Calculate entity match score
+     */
+    private function calculateEntityMatchScore(array $queryEntities, string $content): float
+    {
+        if (empty($queryEntities)) {
+            return 0.0;
+        }
+
+        $matches = 0;
+        $total = 0;
+
+        foreach ($queryEntities as $entityType => $entities) {
+            foreach ($entities as $entity) {
+                $total++;
+                if (stripos($content, $entity) !== false) {
+                    $matches++;
                 }
             }
         }
 
-        return $semanticMatches / max(count($questionTokens) * count($contentTokens), 1);
+        return $total > 0 ? $matches / $total : 0.0;
     }
 
     /**
-     * Boost score for focus words (key entities in question)
+     * Calculate position-based score (earlier chunks slightly favored)
      */
-    private function calculateFocusWordBoost(string $question, string $content): float
+    private function calculatePositionScore(int $index, int $total): float
     {
-        // Extract likely focus words (capitalized, numbers, special terms)
-        preg_match_all('/\b([A-Z][a-z]+|\d+|[a-z]{8,})\b/', $question, $focusWords);
-
-        if (empty($focusWords[0])) {
-            return 0.0;
+        if ($total <= 1) {
+            return 1.0;
         }
 
-        $boostScore = 0.0;
-        foreach ($focusWords[0] as $focus) {
-            if (stripos($content, $focus) !== false) {
-                $boostScore += 1.0;
+        return 1.0 - (($index / $total) * 0.3);
+    }
+
+    /**
+     * Calculate context boost based on question analysis
+     */
+    private function calculateContextBoost(string $content, array $analysis): float
+    {
+        $boost = 1.0;
+
+        // Boost for specific content types matching question type
+        $type = $analysis['type'];
+
+        if ($type === 'pricing' && preg_match('/\$|\bprice\b|\bcost\b/i', $content)) {
+            $boost *= 1.3;
+        }
+
+        if ($type === 'contact' && preg_match('/@|phone|email|contact/i', $content)) {
+            $boost *= 1.3;
+        }
+
+        if ($type === 'location' && preg_match('/\baddress\b|\blocation\b|\boffice\b/i', $content)) {
+            $boost *= 1.25;
+        }
+
+        // Enhanced boost for list-type content when list is required
+        if ($analysis['requires_list'] || $type === 'list') {
+            // Check for numbered lists (1., 2., etc.)
+            if (preg_match('/^\s*\d+\.|\n\s*\d+\./m', $content)) {
+                $boost *= 1.5; // Strong boost for numbered lists
+            }
+            // Check for bullet points or list markers
+            elseif (preg_match('/^[\d\-•]|\n[\d\-•]/m', $content)) {
+                $boost *= 1.3;
+            }
+            // Check for "Our Services" or similar section headers
+            if (preg_match('/\b(?:services?|offering|offer|provide|include)\b/i', $content)) {
+                $boost *= 1.2;
             }
         }
 
-        return min($boostScore / count($focusWords[0]), 1.0);
-    }
-
-    /**
-     * Extract bigrams from text
-     */
-    private function extractBigrams(string $text): array
-    {
-        $tokens = $this->tokenize($text, false);
-        $bigrams = [];
-
-        for ($i = 0; $i < count($tokens) - 1; $i++) {
-            $bigrams[] = $tokens[$i] . ' ' . $tokens[$i + 1];
+        // Boost for exact phrase matches like "Our Services"
+        if (preg_match('/\bour\s+services?\b/i', $content)) {
+            $boost *= 1.25;
         }
 
-        return $bigrams;
-    }
-
-    /**
-     * Check if two words are similar (Levenshtein distance)
-     */
-    private function areSimilarWords(string $word1, string $word2): bool
-    {
-        if (strlen($word1) < 4 || strlen($word2) < 4) {
-            return false;
+        // Boost for temporal content when temporal element detected
+        if ($analysis['temporal'] && preg_match('/\b\d{4}\b|\bdate\b|\byear\b/i', $content)) {
+            $boost *= 1.15;
         }
 
-        $distance = levenshtein($word1, $word2);
-        $maxLen = max(strlen($word1), strlen($word2));
-
-        return ($distance / $maxLen) < 0.3; // 30% difference threshold
+        return $boost;
     }
 
     /**
-     * Simple synonym map for common words
+     * Select optimal chunks based on diversity and relevance
      */
-    private function getSynonymMap(): array
+    private function selectOptimalChunks(array $rankedChunks, array $analysis): array
     {
-        return [
-            'service' => ['services', 'offering', 'product', 'solution'],
-            'price' => ['pricing', 'cost', 'fee', 'charge', 'rate'],
-            'contact' => ['reach', 'email', 'phone', 'call'],
-            'company' => ['organization', 'business', 'firm', 'corporation'],
-            'offer' => ['provide', 'give', 'deliver', 'supply'],
-            'location' => ['office', 'address', 'place', 'headquarter'],
-            'team' => ['staff', 'employee', 'member', 'people'],
-            'project' => ['work', 'case', 'assignment', 'job'],
-        ];
+        $complexity = $analysis['complexity'];
+
+        // Determine number of chunks to use
+        $chunkCount = match ($complexity) {
+            'complex' => 5,
+            'moderate' => 3,
+            'simple' => 2,
+            default => 3,
+        };
+
+        // Select top chunks while maintaining diversity
+        $selected = [];
+        $usedSources = [];
+
+        foreach ($rankedChunks as $chunkData) {
+            if (count($selected) >= $chunkCount) {
+                break;
+            }
+
+            $source = $chunkData['chunk']['source'];
+
+            // Prefer diverse sources, but allow duplicates for high-scoring chunks
+            if (!isset($usedSources[$source]) || $chunkData['score'] > 0.7) {
+                $selected[] = $chunkData;
+                $usedSources[$source] = true;
+            }
+        }
+
+        return $selected;
     }
 
+
+    // ==========================================
+    // INTELLIGENT RESPONSE GENERATION
+    // ==========================================
+
     /**
-     * Generate natural AI-like response
+     * Generate contextually intelligent response
      */
-    private function generateNaturalResponse(string $question, string $type, array $topChunks): string
-    {
-        // Extract most relevant information
-        $info = $this->extractRelevantInfo($question, $topChunks);
+    private function generateIntelligentResponse(
+        string $originalQuestion,
+        string $normalizedQuestion,
+        array $analysis,
+        array $topChunks,
+        array $entities
+    ): string {
+        // Extract relevant information with enhanced context
+        $info = $this->extractRelevantInformation($normalizedQuestion, $topChunks, $analysis);
 
         if (empty($info['sentences'])) {
-            return $this->generateNoInfoResponse($question);
+            return $this->generateNoInfoResponse($originalQuestion);
         }
 
-        // Generate opening based on question type and confidence
-        $opening = $this->generateOpening($type, $info['confidence']);
+        // Build response structure
+        $response = $this->buildResponseStructure($info, $analysis, $originalQuestion);
 
-        // Synthesize main answer
-        $mainAnswer = $this->synthesizeAnswer($info['sentences'], $type);
+        // Add proper spacing and formatting
+        $response = $this->formatResponse($response, $analysis);
 
-        // Add context if available
-        $context = $this->addContext($info['sentences'], $type);
-
-        // Combine into natural response
-        $response = $opening . ' ' . $mainAnswer;
-
-        if (!empty($context)) {
-            $response .= ' ' . $context;
-        }
-
-        return trim($response);
+        return $response;
     }
 
     /**
-     * Extract most relevant information from chunks
+     * Extract relevant information with contextual understanding
      */
-    private function extractRelevantInfo(string $question, array $chunks): array
+    private function extractRelevantInformation(string $question, array $chunks, array $analysis): array
     {
         $relevantSentences = [];
         $sources = [];
-        $totalScore = 0;
+        $allEntities = [];
 
         foreach ($chunks as $chunkData) {
             $sentences = $chunkData['sentences'];
             $chunkScore = $chunkData['score'];
+            $chunkEntities = $chunkData['entities'];
 
             foreach ($sentences as $sentence) {
-                $sentenceScore = $this->scoreSentence($sentence, $question);
+                $sentenceScore = $this->scoreSentenceAdvanced($sentence, $question, $analysis);
 
-                if ($sentenceScore > 0) {
+                if ($sentenceScore > 0.1) {
                     $relevantSentences[] = [
                         'text' => $sentence,
                         'score' => $sentenceScore * $chunkScore,
-                        'source' => $chunkData['chunk']['source'] ?? 'unknown'
+                        'source' => $chunkData['chunk']['source'] ?? 'unknown',
+                        'length' => strlen($sentence),
+                        'has_entity' => $this->containsKeyEntity($sentence, $chunkEntities),
                     ];
-                    $totalScore += $sentenceScore;
                 }
             }
 
             $sources[] = $chunkData['chunk']['source'] ?? 'unknown';
+            $allEntities = array_merge_recursive($allEntities, $chunkEntities);
         }
 
-        // Sort sentences by score
+        // Sort by score
         usort($relevantSentences, fn($a, $b) => $b['score'] <=> $a['score']);
 
-        // Calculate confidence based on top sentence scores
-        $confidence = empty($relevantSentences) ? 0 : min($relevantSentences[0]['score'] * 100, 95);
+        // Calculate confidence
+        $confidence = $this->calculateConfidence($relevantSentences, $analysis);
 
         return [
             'sentences' => $relevantSentences,
             'sources' => array_unique($sources),
-            'confidence' => $confidence
+            'entities' => $allEntities,
+            'confidence' => $confidence,
         ];
     }
 
     /**
-     * Score individual sentence relevance
+     * Advanced sentence scoring
      */
-    private function scoreSentence(string $sentence, string $question): float
+    private function scoreSentenceAdvanced(string $sentence, string $question, array $analysis): float
     {
         $sentence = trim($sentence);
 
-        if (empty($sentence) || strlen($sentence) < 10) {
+        if (
+            strlen($sentence) < self::MIN_SENTENCE_LENGTH ||
+            strlen($sentence) > self::MAX_SENTENCE_LENGTH
+        ) {
             return 0.0;
         }
 
         $questionTokens = $this->tokenize($question);
         $sentenceTokens = $this->tokenize($sentence);
 
+        // Base coverage score
         $matches = count(array_intersect($questionTokens, $sentenceTokens));
         $coverage = $matches / max(count($questionTokens), 1);
 
-        // Boost sentences with numbers, entities, specific info
+        // Apply boosts based on content
         $boost = 1.0;
-        if (preg_match('/\d+/', $sentence)) {
-            $boost += 0.2;
-        }
-        if (preg_match('/[A-Z][a-z]+\s+[A-Z][a-z]+/', $sentence)) {
+
+        // Entity boost
+        if (preg_match('/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b/', $sentence)) {
             $boost += 0.15;
         }
-        if (preg_match('/@|\.com|http/', $sentence)) {
+
+        // Number/data boost
+        if (preg_match('/\b\d+(?:[.,]\d+)*\b/', $sentence)) {
+            $boost += 0.20;
+        }
+
+        // Contact information boost
+        if (preg_match('/@|\.com|http|phone|email/i', $sentence)) {
             $boost += 0.25;
+        }
+
+        // Pricing information boost
+        if (preg_match('/\$|price|cost|fee/i', $sentence)) {
+            $boost += 0.20;
+        }
+
+        // Question type specific boosts
+        $type = $analysis['type'];
+        if ($type === 'definition' && preg_match('/\b(?:is|are|refers to|means|represents)\b/i', $sentence)) {
+            $boost += 0.15;
+        }
+
+        if ($type === 'method' && preg_match('/\b(?:by|through|using|via|can|should)\b/i', $sentence)) {
+            $boost += 0.15;
+        }
+
+        // Penalize very short or very generic sentences
+        if (strlen($sentence) < 30) {
+            $boost *= 0.7;
+        }
+
+        if (preg_match('/^(?:yes|no|maybe|perhaps),?\s/i', $sentence)) {
+            $boost *= 0.5;
         }
 
         return $coverage * $boost;
     }
 
     /**
-     * Generate contextual opening
+     * Check if sentence contains key entities
      */
-    private function generateOpening(string $type, float $confidence): string
+    private function containsKeyEntity(string $sentence, array $entities): bool
     {
-        $openings = [
-            'definition' => [
-                'high' => ['', 'Let me explain:', 'Here\'s what I found:'],
-                'medium' => ['Based on the available information,', 'From what I can see,'],
-                'low' => ['I found some information that might help:', 'Here\'s what the documents indicate:']
-            ],
-            'location' => [
-                'high' => ['', 'The location is', 'You can find us at'],
-                'medium' => ['Based on our records,', 'According to the documents,'],
-                'low' => ['I found location information:', 'The documents mention:']
-            ],
-            'pricing' => [
-                'high' => ['', 'Here\'s the pricing information:', 'The pricing is as follows:'],
-                'medium' => ['Based on our pricing structure,', 'According to our packages,'],
-                'low' => ['I found some pricing details:', 'The documents indicate:']
-            ],
-            'contact' => [
-                'high' => ['You can reach us through the following:', 'Here are the contact details:', ''],
-                'medium' => ['Based on our contact information,', 'According to the records,'],
-                'low' => ['I found contact information:', 'The documents show:']
-            ],
-            'list' => [
-                'high' => ['Here\'s what we offer:', 'Here are the items:', ''],
-                'medium' => ['Based on the documents,', 'From what I can see,'],
-                'low' => ['I found a list of:', 'The information includes:']
-            ],
-            'general' => [
-                'high' => ['', 'Here\'s what I found:', 'Based on our information,'],
-                'medium' => ['According to the documents,', 'From the available information,'],
-                'low' => ['I found some relevant information:', 'The documents suggest:']
-            ]
-        ];
-
-        $confidenceLevel = $confidence > 70 ? 'high' : ($confidence > 40 ? 'medium' : 'low');
-        $options = $openings[$type] ?? $openings['general'];
-
-        return $options[$confidenceLevel][array_rand($options[$confidenceLevel])];
+        foreach ($entities as $entityType => $entityList) {
+            foreach ($entityList as $entity) {
+                if (stripos($sentence, $entity) !== false) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**
-     * Synthesize coherent answer from sentences
+     * Calculate confidence score
      */
-    private function synthesizeAnswer(array $sentences, string $type): string
+    private function calculateConfidence(array $sentences, array $analysis): float
     {
         if (empty($sentences)) {
-            return "I don't have specific information about that.";
+            return 0.0;
         }
 
-        // For lists and multi-part answers
-        if ($type === 'list' || count($sentences) > 3) {
-            return $this->generateListAnswer($sentences);
-        }
+        // Base confidence on top sentence scores
+        $topScores = array_slice(array_column($sentences, 'score'), 0, 3);
+        $avgScore = array_sum($topScores) / count($topScores);
 
-        // For specific questions (contact, pricing, etc.)
-        if (in_array($type, ['contact', 'pricing', 'location', 'quantity'])) {
-            return $this->generateSpecificAnswer($sentences, $type);
-        }
+        // Adjust based on question complexity
+        $complexityMultiplier = match ($analysis['complexity']) {
+            'simple' => 1.2,
+            'moderate' => 1.0,
+            'complex' => 0.85,
+            default => 1.0,
+        };
 
-        // For general/explanation questions
-        return $this->generateParagraphAnswer($sentences);
+        $confidence = $avgScore * $complexityMultiplier * 100;
+
+        return min($confidence, 95); // Cap at 95%
     }
 
     /**
-     * Generate list-style answer
+     * Build structured response
      */
-    private function generateListAnswer(array $sentences): string
+    private function buildResponseStructure(array $info, array $analysis, string $question): string
+    {
+        $type = $analysis['type'];
+        $confidence = $info['confidence'];
+        $sentences = $info['sentences'];
+
+        // Determine response style
+        $style = $this->determineResponseStyle($analysis);
+
+        // Generate opening
+        $opening = $this->generateContextualOpening($type, $confidence, $style, $question);
+
+        // Generate main content
+        $mainContent = $this->generateMainContent($sentences, $type, $analysis, $info['entities']);
+
+        // Generate supporting details
+        $supporting = $this->generateSupportingDetails($sentences, $type, $analysis);
+
+        // Generate conclusion if needed
+        $conclusion = $this->generateConclusion($type, $analysis, $confidence);
+
+        // Assemble response with proper spacing
+        // For list responses, use single newline after opening, then preserve list formatting
+        if ($type === 'list' || $analysis['requires_list']) {
+            $response = $opening;
+            if (!empty($opening) && !empty($mainContent)) {
+                $response .= "\n\n" . $mainContent;
+            } elseif (!empty($mainContent)) {
+                $response = $mainContent;
+            }
+            if (!empty($supporting)) {
+                $response .= "\n\n" . $supporting;
+            }
+            if (!empty($conclusion)) {
+                $response .= "\n\n" . $conclusion;
+            }
+            return $response;
+        }
+
+        // For other response types, use double newlines between sections
+        $parts = array_filter([
+            $opening,
+            $mainContent,
+            $supporting,
+            $conclusion,
+        ]);
+
+        return implode("\n\n", $parts);
+    }
+
+    /**
+     * Determine optimal response style
+     */
+    private function determineResponseStyle(array $analysis): string
+    {
+        if ($analysis['requires_list']) {
+            return 'list';
+        }
+
+        if ($analysis['is_comparative']) {
+            return 'comparative';
+        }
+
+        if ($analysis['intent'] === 'instructional') {
+            return 'instructional';
+        }
+
+        if (in_array($analysis['type'], ['definition', 'person', 'location'])) {
+            return 'concise';
+        }
+
+        return 'comprehensive';
+    }
+
+    /**
+     * Generate contextual opening
+     */
+    private function generateContextualOpening(string $type, float $confidence, string $style, string $question): string
+    {
+        $confidenceLevel = $confidence > self::HIGH_CONFIDENCE ? 'high'
+            : ($confidence > self::MEDIUM_CONFIDENCE ? 'medium' : 'low');
+
+        // Type-specific openings
+        $openings = [
+            'definition' => [
+                'high' => ['', 'To clarify,', 'In simple terms,'],
+                'medium' => ['Based on the information available,', 'From what I understand,', 'The documentation indicates that'],
+                'low' => ['I found some information about this:', 'While my information is limited,'],
+            ],
+            'explanation' => [
+                'high' => ['Let me explain:', 'Here\'s how this works:', 'To break this down:'],
+                'medium' => ['From what I can gather,', 'Based on the documentation,', 'Here\'s what I found:'],
+                'low' => ['I have some relevant information:', 'Based on partial documentation,'],
+            ],
+            'method' => [
+                'high' => ['Here\'s the process:', 'This is how you can do it:', 'Follow these steps:'],
+                'medium' => ['Based on the available information,', 'From what I understand,'],
+                'low' => ['I found some guidance:', 'There\'s some information about this:'],
+            ],
+            'list' => [
+                'high' => ['Here are the services we offer:', 'Our services include:', 'We provide the following services:'],
+                'medium' => ['Based on the documentation, here are the available services:', 'I found the following services:'],
+                'low' => ['Here are some of the services I found:', 'The available services include:'],
+            ],
+            'pricing' => [
+                'high' => ['Here\'s the pricing information:', 'The costs are as follows:', ''],
+                'medium' => ['Based on our pricing structure,', 'The documentation shows these prices:'],
+                'low' => ['I found some pricing details:', 'There\'s some pricing information available:'],
+            ],
+            'contact' => [
+                'high' => ['You can reach out through:', 'Here are the contact details:', ''],
+                'medium' => ['Based on the contact information available,', 'From what I found,'],
+                'low' => ['I located some contact information:', 'There are contact details in the records:'],
+            ],
+        ];
+
+        $typeOpenings = $openings[$type] ?? $openings['definition'];
+        $options = $typeOpenings[$confidenceLevel];
+
+        $opening = $options[array_rand($options)];
+
+        // Add emphasis for complex questions or high-confidence responses
+        if ($style === 'comprehensive' && $confidence > self::HIGH_CONFIDENCE) {
+            $emphasisPhrases = [
+                'I\'d be happy to help with that.',
+                'That\'s a great question.',
+                'Let me provide you with detailed information.',
+            ];
+            $emphasis = $emphasisPhrases[array_rand($emphasisPhrases)];
+            $opening = $emphasis . ' ' . $opening;
+        } elseif ($type === 'list' && $confidence > self::MEDIUM_CONFIDENCE) {
+            // More natural openings for list questions
+            if (empty($opening)) {
+                $opening = 'Here are the services:';
+            }
+        }
+
+        return trim($opening);
+    }
+
+    /**
+     * Generate main content
+     */
+    private function generateMainContent(array $sentences, string $type, array $analysis, array $entities): string
+    {
+        if (empty($sentences)) {
+            return "I don't have specific information about that in the available documents.";
+        }
+
+        // Route to appropriate content generator
+        if ($analysis['requires_list'] || $type === 'list') {
+            return $this->generateListContent($sentences, $entities);
+        }
+
+        if ($analysis['is_comparative']) {
+            return $this->generateComparativeContent($sentences);
+        }
+
+        if (in_array($type, ['pricing', 'contact', 'location'])) {
+            return $this->generateSpecificInfoContent($sentences, $type, $entities);
+        }
+
+        return $this->generateNarrativeContent($sentences, $analysis);
+    }
+
+    /**
+     * Generate list-formatted content with proper extraction and formatting
+     */
+    private function generateListContent(array $sentences, array $entities): string
     {
         $items = [];
         $seen = [];
+        $rawTexts = [];
 
-        foreach (array_slice($sentences, 0, 5) as $sentenceData) {
-            $text = trim($sentenceData['text']);
+        // First, collect raw sentence texts to extract numbered lists
+        foreach (array_slice($sentences, 0, 15) as $sentenceData) {
+            $rawTexts[] = $sentenceData['text'];
+        }
 
-            // Skip duplicates
-            if (in_array($text, $seen)) {
-                continue;
-            }
-            $seen[] = $text;
+        // Combine texts to look for numbered lists across sentence boundaries
+        $combinedText = implode(' ', $rawTexts);
 
-            // Extract list items or use full sentence
-            if (preg_match('/^[\d\-•]\s*(.+)/', $text, $matches)) {
-                $items[] = trim($matches[1]);
-            } elseif (strlen($text) > 20 && strlen($text) < 200) {
-                $items[] = $text;
+        // Extract numbered list items (e.g., "1. Service Name - description")
+        if (preg_match_all('/(?:^|\s)(\d+\.\s+[^0-9]+?)(?=\s+\d+\.|$)/', $combinedText, $matches, PREG_SET_ORDER)) {
+            foreach ($matches as $match) {
+                $item = trim($match[1]);
+                // Clean up the item - remove number prefix and normalize
+                $item = preg_replace('/^\d+\.\s*/', '', $item);
+                $item = trim($item);
+
+                // Split on dash if present (e.g., "Service Name - description")
+                if (preg_match('/^(.+?)\s*-\s*(.+)$/', $item, $parts)) {
+                    $serviceName = trim($parts[1]);
+                    $description = trim($parts[2]);
+                    $item = $serviceName . ' - ' . $description;
+                }
+
+                // Remove trailing punctuation that might have been attached
+                $item = rtrim($item, '.,;');
+
+                if (!empty($item) && strlen($item) > 5) {
+                    $itemLower = strtolower($item);
+                    if (!in_array($itemLower, $seen)) {
+                        $items[] = $item;
+                        $seen[] = $itemLower;
+                    }
+                }
             }
         }
 
-        if (count($items) <= 1) {
-            return $items[0] ?? $sentences[0]['text'];
+        // If no numbered lists found, try extracting from individual sentences
+        if (empty($items)) {
+            foreach (array_slice($sentences, 0, 10) as $sentenceData) {
+                $text = trim($sentenceData['text']);
+
+                // Skip duplicates
+                $textLower = strtolower($text);
+                if (in_array($textLower, $seen)) {
+                    continue;
+                }
+                $seen[] = $textLower;
+
+                // Extract numbered items (1., 2., etc.)
+                if (preg_match('/^(\d+\.\s*.+?)(?:\.|$)/', $text, $matches)) {
+                    $item = trim($matches[1]);
+                    $item = preg_replace('/^\d+\.\s*/', '', $item);
+                    if (!empty($item) && strlen($item) > 10) {
+                        $items[] = $item;
+                    }
+                }
+                // Extract bullet points
+                elseif (preg_match('/^[\-•]\s*(.+)/', $text, $matches)) {
+                    $item = trim($matches[1]);
+                    if (!empty($item) && strlen($item) > 10) {
+                        $items[] = $item;
+                    }
+                }
+                // Accept well-formed sentences
+                elseif (strlen($text) > 20 && strlen($text) < 250 && !preg_match('/^(?:yes|no|maybe|perhaps)/i', $text)) {
+                    $items[] = $this->cleanSentence($text);
+                }
+            }
         }
 
-        // Format as natural list
-        $answer = implode(', ', array_slice($items, 0, -1));
-        $answer .= ', and ' . end($items);
+        if (empty($items)) {
+            // Fallback to first sentence
+            return !empty($sentences) ? $this->cleanSentence($sentences[0]['text']) : '';
+        }
 
-        return $answer . '.';
+        // Format items with proper spacing and structure
+        if (count($items) === 1) {
+            return $items[0];
+        }
+
+        // Format as structured list with newlines for better readability
+        if (count($items) <= 2) {
+            return implode(' and ', $items) . '.';
+        }
+
+        // For 3+ items, format with proper line breaks
+        $formattedItems = [];
+        foreach ($items as $index => $item) {
+            $formattedItems[] = ($index + 1) . '. ' . ucfirst($item);
+        }
+
+        return implode("\n", $formattedItems);
     }
 
     /**
-     * Generate specific answer (contact, pricing, etc.)
+     * Generate comparative content
      */
-    private function generateSpecificAnswer(array $sentences, string $type): string
+    private function generateComparativeContent(array $sentences): string
     {
-        $extracted = [];
+        $topSentences = array_slice($sentences, 0, 3);
+        $parts = [];
 
-        foreach (array_slice($sentences, 0, 3) as $sentenceData) {
-            $text = $sentenceData['text'];
-
-            // Extract specific patterns based on type
-            if ($type === 'contact') {
-                if (preg_match('/(email|phone|address|contact)[:=]?\s*([^\n,]+)/i', $text, $match)) {
-                    $extracted[] = trim($match[2]);
-                }
-            } elseif ($type === 'pricing') {
-                if (preg_match('/\$[\d,]+ ?-? ?[\d,]*|\$[\d,]+/i', $text, $match)) {
-                    $extracted[] = trim($match[0]);
-                }
+        foreach ($topSentences as $sentenceData) {
+            $cleaned = $this->cleanSentence($sentenceData['text']);
+            if (!empty($cleaned)) {
+                $parts[] = $cleaned;
             }
         }
 
-        // If extraction worked, format nicely
-        if (!empty($extracted)) {
-            return implode(', ', array_unique($extracted));
+        if (count($parts) === 1) {
+            return $parts[0];
         }
 
-        // Otherwise return best sentence
+        // Connect with comparative transitions
+        $transitions = ['On the other hand,', 'In contrast,', 'Conversely,', 'Meanwhile,'];
+        $result = $parts[0];
+
+        for ($i = 1; $i < count($parts); $i++) {
+            $transition = $transitions[array_rand($transitions)];
+            $result .= ' ' . $transition . ' ' . lcfirst($parts[$i]);
+        }
+
+        return $result;
+    }
+
+    /**
+     * Generate specific information content (pricing, contact, etc.)
+     */
+    private function generateSpecificInfoContent(array $sentences, string $type, array $entities): string
+    {
+        $extracted = [];
+
+        // Type-specific extraction
+        switch ($type) {
+            case 'contact':
+                foreach ($entities['emails'] ?? [] as $email) {
+                    $extracted[] = "Email: " . $email;
+                }
+                foreach ($entities['phones'] ?? [] as $phone) {
+                    $extracted[] = "Phone: " . $phone;
+                }
+                foreach ($entities['urls'] ?? [] as $url) {
+                    $extracted[] = "Website: " . $url;
+                }
+                break;
+
+            case 'pricing':
+                foreach ($entities['prices'] ?? [] as $price) {
+                    $extracted[] = $price;
+                }
+                break;
+
+            case 'location':
+                // Extract address-like patterns
+                foreach ($sentences as $sentenceData) {
+                    if (preg_match('/\d+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,/i', $sentenceData['text'])) {
+                        $extracted[] = $this->cleanSentence($sentenceData['text']);
+                        break;
+                    }
+                }
+                break;
+        }
+
+        if (!empty($extracted)) {
+            return implode(', ', array_unique($extracted)) . '.';
+        }
+
+        // Fallback to best sentence
         return $this->cleanSentence($sentences[0]['text']);
     }
 
     /**
-     * Generate paragraph-style answer
+     * Generate narrative content
      */
-    private function generateParagraphAnswer(array $sentences): string
+    private function generateNarrativeContent(array $sentences, array $analysis): string
     {
-        $topSentences = array_slice($sentences, 0, 2);
-        $texts = array_map(fn($s) => $this->cleanSentence($s['text']), $topSentences);
+        $complexity = $analysis['complexity'];
 
-        // Combine sentences naturally
-        if (count($texts) === 1) {
-            return $texts[0];
+        $sentenceCount = match ($complexity) {
+            'complex' => 3,
+            'moderate' => 2,
+            'simple' => 1,
+            default => 2,
+        };
+
+        $selectedSentences = array_slice($sentences, 0, $sentenceCount);
+
+        if (count($selectedSentences) === 1) {
+            return $this->cleanSentence($selectedSentences[0]['text']);
         }
 
-        // Connect sentences if they're related
-        $combined = $texts[0];
-        if (!empty($texts[1]) && strlen($texts[1]) > 20) {
-            $combined .= ' Additionally, ' . lcfirst($texts[1]);
+        // Build cohesive narrative
+        $narrative = $this->cleanSentence($selectedSentences[0]['text']);
+
+        for ($i = 1; $i < count($selectedSentences); $i++) {
+            $transition = $this->selectTransition($i, count($selectedSentences), $analysis);
+            $sentence = $this->cleanSentence($selectedSentences[$i]['text']);
+
+            $narrative .= ' ' . $transition . ' ' . lcfirst($sentence);
         }
 
-        return $combined;
+        return $narrative;
     }
 
     /**
-     * Add contextual information
+     * Select appropriate transition phrase
      */
-    private function addContext(array $sentences, string $type): string
+    private function selectTransition(int $position, int $total, array $analysis): string
     {
-        // Only add context for general questions
-        if (!in_array($type, ['general', 'explanation'])) {
+        $type = $analysis['type'];
+
+        // Last sentence - use conclusion transitions
+        if ($position === $total - 1) {
+            $transitions = $this->transitionPhrases['conclusion'];
+            return $transitions[array_rand($transitions)];
+        }
+
+        // Choose based on context
+        if ($type === 'explanation' || $type === 'method') {
+            $transitions = $this->transitionPhrases['addition'];
+        } elseif ($analysis['is_comparative']) {
+            $transitions = $this->transitionPhrases['contrast'];
+        } else {
+            $transitions = $this->transitionPhrases['addition'];
+        }
+
+        return $transitions[array_rand($transitions)];
+    }
+
+    /**
+     * Generate supporting details
+     */
+    private function generateSupportingDetails(array $sentences, string $type, array $analysis): string
+    {
+        // Only add supporting details for comprehensive responses
+        if ($analysis['complexity'] !== 'complex' || count($sentences) < 4) {
             return '';
         }
 
-        // Look for additional relevant details
-        $contextSentences = array_slice($sentences, 2, 2);
+        $supportSentences = array_slice($sentences, 3, 2);
+        $details = [];
 
-        if (empty($contextSentences)) {
-            return '';
-        }
-
-        foreach ($contextSentences as $sentenceData) {
+        foreach ($supportSentences as $sentenceData) {
             $text = $this->cleanSentence($sentenceData['text']);
-            if (strlen($text) > 30 && strlen($text) < 150) {
-                return $text;
+
+            if (strlen($text) > 30 && strlen($text) < 180 && $sentenceData['score'] > 0.3) {
+                $details[] = $text;
             }
         }
 
+        if (empty($details)) {
+            return '';
+        }
+
+        $transition = $this->transitionPhrases['addition'][array_rand($this->transitionPhrases['addition'])];
+        return $transition . ' ' . lcfirst(implode(' ', $details));
+    }
+
+    /**
+     * Generate conclusion
+     */
+    private function generateConclusion(string $type, array $analysis, float $confidence): string
+    {
+        // Only add conclusion for complex questions or when confidence is low
+        if ($analysis['complexity'] !== 'complex' && $confidence > self::MEDIUM_CONFIDENCE) {
+            return '';
+        }
+
+        if ($confidence < self::MEDIUM_CONFIDENCE) {
+            $closings = [
+                "If you need more specific information, please let me know.",
+                "I can provide more details if you have additional questions.",
+                "Feel free to ask if you'd like me to clarify anything.",
+            ];
+            return $closings[array_rand($closings)];
+        }
+
+        if ($type === 'contact') {
+            return "I hope this helps you get in touch!";
+        }
+
+        if ($type === 'pricing') {
+            return "These are the pricing details I found in the documentation.";
+        }
+
         return '';
+    }
+
+    /**
+     * Format final response with proper spacing and structure
+     */
+    private function formatResponse(string $response, array $analysis): string
+    {
+        // Preserve newlines for lists, but clean up excessive whitespace
+        // Split by newlines to preserve list structure
+        $lines = preg_split('/\n/', $response);
+        $formattedLines = [];
+
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if (!empty($line)) {
+                // Clean up multiple spaces within the line
+                $line = preg_replace('/\s+/', ' ', $line);
+                $formattedLines[] = $line;
+            }
+        }
+
+        // Rejoin with single newlines (preserving list structure)
+        $response = implode("\n", $formattedLines);
+
+        // Ensure proper paragraph spacing (double newlines) between major sections
+        // But preserve single newlines for lists
+        $response = preg_replace('/([.!?])\s*\n\s*([A-Z])/', "$1\n\n$2", $response);
+
+        // Clean up excessive newlines (more than 2 consecutive)
+        $response = preg_replace('/\n{3,}/', "\n\n", $response);
+
+        // Trim
+        $response = trim($response);
+
+        // Ensure ends with proper punctuation (but not if it's a list)
+        if (!preg_match('/[.!?]$/', $response) && !preg_match('/\n\d+\./', $response)) {
+            $response .= '.';
+        }
+
+        return $response;
+    }
+
+
+    // ==========================================
+    // UTILITY METHODS
+    // ==========================================
+
+    /**
+     * Extract sentences from text with better boundary detection
+     */
+    private function extractSentences(string $text): array
+    {
+        // Handle common abbreviations
+        $text = preg_replace('/\b(Dr|Mr|Mrs|Ms|Prof|Sr|Jr|Inc|Ltd|Corp)\./i', '$1<DOT>', $text);
+
+        // Split on sentence boundaries
+        $sentences = preg_split('/(?<=[.!?])\s+(?=[A-Z])/', $text, -1, PREG_SPLIT_NO_EMPTY);
+
+        // Restore abbreviations
+        $sentences = array_map(fn($s) => str_replace('<DOT>', '.', $s), $sentences);
+
+        // Filter and clean
+        return array_filter(array_map('trim', $sentences), function ($s) {
+            return strlen($s) >= self::MIN_SENTENCE_LENGTH && strlen($s) <= self::MAX_SENTENCE_LENGTH;
+        });
     }
 
     /**
@@ -689,39 +1757,116 @@ class Vanilla implements AIContract
      */
     private function cleanSentence(string $sentence): string
     {
+        // Trim whitespace
         $sentence = trim($sentence);
+
+        // Normalize whitespace
         $sentence = preg_replace('/\s+/', ' ', $sentence);
-        $sentence = preg_replace('/^[\d\-•]\s*/', '', $sentence);
+
+        // Remove list markers
+        $sentence = preg_replace('/^[\d\-•)\]]+\s*/', '', $sentence);
+
+        // Remove extra punctuation
+        $sentence = preg_replace('/([.!?])\1+/', '$1', $sentence);
 
         // Ensure proper ending
         if (!preg_match('/[.!?]$/', $sentence)) {
             $sentence .= '.';
         }
 
+        // Capitalize first letter
+        $sentence = ucfirst($sentence);
+
         return $sentence;
     }
 
     /**
-     * Extract sentences from text
+     * Normalize word to base form (handle plurals/singulars)
      */
-    private function extractSentences(string $text): array
+    private function normalizeWord(string $word): string
     {
-        // Split on sentence boundaries
-        $sentences = preg_split('/(?<=[.!?])\s+/', $text, -1, PREG_SPLIT_NO_EMPTY);
+        $word = strtolower(trim($word));
 
-        return array_filter(array_map('trim', $sentences), function ($s) {
-            return strlen($s) > 10; // Filter out very short sentences
-        });
+        if (strlen($word) <= 3) {
+            return $word;
+        }
+
+        // Common plural to singular rules
+        // Words ending in -ies -> -y (services -> service, cities -> city)
+        if (preg_match('/^(.+)ies$/', $word, $matches)) {
+            return $matches[1] . 'y';
+        }
+
+        // Words ending in -es (after s, x, z, ch, sh) -> remove es
+        if (preg_match('/^(.+)(?:s|x|z|ch|sh)es$/', $word, $matches)) {
+            return $matches[1] . substr($word, -3, 1); // Keep the letter before 'es'
+        }
+
+        // Words ending in -es -> -e (cases -> case, but not always)
+        if (preg_match('/^(.+)es$/', $word, $matches) && strlen($matches[1]) > 3) {
+            // Only if it doesn't end in s, x, z, ch, sh
+            if (!preg_match('/[sxz]|ch|sh$/', $matches[1])) {
+                return $matches[1] . 'e';
+            }
+        }
+
+        // Words ending in -s (simple plurals) -> remove s
+        if (preg_match('/^(.+)s$/', $word, $matches) && strlen($matches[1]) > 2) {
+            // Don't remove 's' if word ends in 'ss' or is too short
+            if (!preg_match('/ss$/', $matches[1])) {
+                return $matches[1];
+            }
+        }
+
+        return $word;
     }
 
     /**
-     * Tokenize text into meaningful words
+     * Get word variations (plural and singular forms) for matching
+     */
+    private function getWordVariations(string $word): array
+    {
+        $variations = [strtolower($word)];
+        $normalized = $this->normalizeWord($word);
+
+        if ($normalized !== $word) {
+            $variations[] = $normalized;
+        }
+
+        // Also add plural form if we normalized to singular
+        if ($normalized !== $word && strlen($normalized) > 2) {
+            // Simple pluralization: add 's'
+            if (!preg_match('/[sxz]|ch|sh$/', $normalized)) {
+                $variations[] = $normalized . 's';
+            }
+            // Words ending in 'y' -> 'ies'
+            if (preg_match('/y$/', $normalized)) {
+                $variations[] = substr($normalized, 0, -1) . 'ies';
+            }
+        }
+
+        return array_unique($variations);
+    }
+
+    /**
+     * Tokenize text into meaningful words with preprocessing
      */
     private function tokenize(string $text, bool $removeStopWords = true): array
     {
-        // Convert to lowercase and extract words
+        // Convert to lowercase
         $text = strtolower($text);
+
+        // Preserve important punctuation-attached words (emails, URLs)
+        $text = preg_replace('/([a-z0-9])@([a-z0-9])/', '$1AT$2', $text);
+        $text = preg_replace('/([a-z0-9])\.com/', '$1DOTCOM', $text);
+
+        // Remove other punctuation
         $text = preg_replace('/[^a-z0-9\s]/', ' ', $text);
+
+        // Restore preserved patterns
+        $text = str_replace(['AT', 'DOTCOM'], ['@', '.com'], $text);
+
+        // Split into words
         $words = preg_split('/\s+/', $text, -1, PREG_SPLIT_NO_EMPTY);
 
         // Remove stop words if requested
@@ -740,10 +1885,15 @@ class Vanilla implements AIContract
     private function generateNoInfoResponse(string $question): string
     {
         $responses = [
-            "I don't have specific information about that in the available documents.",
-            "I couldn't find that information in the company documents.",
-            "That information isn't available in the documents I have access to.",
-            "I don't have enough information to answer that question accurately.",
+            "I apologize, but I don't have specific information about that in the available documents.",
+
+            "Unfortunately, I couldn't find detailed information about that in the documentation I have access to.",
+
+            "I don't have enough information in the current knowledge base to answer that question accurately. Could you rephrase your question or ask about something else?",
+
+            "That's not covered in the documents I have available. Is there something else I can help you with?",
+
+            "I wasn't able to locate specific information about that in the documentation. You might want to contact us directly for more details.",
         ];
 
         return $responses[array_rand($responses)];

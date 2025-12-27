@@ -3,17 +3,15 @@
 namespace Lumina;
 
 use Lumina\Contracts\AIContract;
-use Lumina\Drivers\Gemini;
-use Lumina\Drivers\Ollama;
 use Lumina\Drivers\Vanilla;
 
 class Lumina
 {
     private DocumentLoader $documentLoader;
     private VectorStore $vectorStore;
-    private AIContract $ai;
+    private AIContract $aiDriver;
 
-    public function __construct($config = [])
+    public function __construct(null|AIContract $driver = null, array $config = [])
     {
         $config = [
             'documents_path' => storage_dir('documents'),
@@ -22,7 +20,11 @@ class Lumina
             'chunk_overlap' => 50,
             ...$config
         ];
-        // $this->ai = new Ollama();
+
+        if ($driver !== null) {
+            $this->aiDriver = $driver; // Use provided AI driver
+        }
+
         $this->documentLoader = new DocumentLoader($config['documents_path'], $config['chunk_size'], $config['chunk_overlap']);
         $this->vectorStore = new VectorStore($config['vector_cache']);
     }
@@ -116,12 +118,11 @@ class Lumina
             "Question: $question\n\n" .
             "Answer based only on the context above:";
 
-        if (!isset($this->ai)) {
-            $this->ai = new Vanilla($this->vectorStore->getChunks());
-        }
+        // Set the vanilla php driver if not set
+        $this->aiDriver ??= new Vanilla($this->vectorStore->getChunks());
 
         try {
-            return $this->ai->ask($prompt);
+            return $this->aiDriver->ask($prompt);
         } catch (\Throwable $e) {
             return "Error generating answer: " . $e->getMessage();
         }
