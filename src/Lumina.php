@@ -5,6 +5,7 @@ namespace Lumina;
 use Lumina\Contracts\AIContract;
 use Lumina\Drivers\Gemini;
 use Lumina\Drivers\Ollama;
+use Lumina\Drivers\Vanilla;
 
 class Lumina
 {
@@ -21,7 +22,7 @@ class Lumina
             'chunk_overlap' => 50,
             ...$config
         ];
-        $this->ai = new Ollama();
+        // $this->ai = new Ollama();
         $this->documentLoader = new DocumentLoader($config['documents_path'], $config['chunk_size'], $config['chunk_overlap']);
         $this->vectorStore = new VectorStore($config['vector_cache']);
     }
@@ -114,6 +115,10 @@ class Lumina
         $prompt = "Context:\n$context\n\n" .
             "Question: $question\n\n" .
             "Answer based only on the context above:";
+
+        if (!isset($this->ai)) {
+            $this->ai = new Vanilla($this->vectorStore->getChunks());
+        }
 
         try {
             return $this->ai->ask($prompt);

@@ -192,4 +192,12 @@ class VectorStore
     {
         return count($this->chunks);
     }
+
+    /**
+     * Get all chunks
+     */
+    public function getChunks()
+    {
+        return $this->chunks;
+    }
 }
