@@ -6,7 +6,6 @@ use Lumina\Contracts\AIContract;
 
 class Vanilla implements AIContract
 {
-    private array $chunks;
     private array $stopWords;
     private array $questionWords;
     private array $entityPatterns;
@@ -29,9 +28,8 @@ class Vanilla implements AIContract
     private const MIN_SENTENCE_LENGTH = 15;
 
 
-    public function __construct(array $chunks)
+    public function __construct()
     {
-        $this->chunks = $chunks;
         $this->initializeStopWords();
         $this->initializeQuestionWords();
         $this->initializeEntityPatterns();
@@ -634,32 +632,14 @@ class Vanilla implements AIContract
         $flattened = [];
 
         // Process constructor chunks first (always prioritize these)
-        if (!empty($this->chunks)) {
-            foreach ($this->chunks as $chunk) {
-                if (is_array($chunk) && isset($chunk['content']) && !empty($chunk['content'])) {
-                    $flattened[] = $this->normalizeChunk($chunk);
-                } elseif (is_array($chunk)) {
-                    // Handle nested arrays
-                    foreach ($chunk as $subChunk) {
-                        if (is_array($subChunk) && isset($subChunk['content']) && !empty($subChunk['content'])) {
-                            $flattened[] = $this->normalizeChunk($subChunk);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Process context chunks recursively (additional chunks passed in)
-        foreach ($context as $item) {
-            if (is_array($item)) {
-                if (isset($item['content']) && !empty($item['content'])) {
-                    $flattened[] = $this->normalizeChunk($item);
-                } else {
-                    // Handle nested context arrays
-                    foreach ($item as $subItem) {
-                        if (is_array($subItem) && isset($subItem['content']) && !empty($subItem['content'])) {
-                            $flattened[] = $this->normalizeChunk($subItem);
-                        }
+        foreach ($context as $chunk) {
+            if (is_array($chunk) && isset($chunk['content']) && !empty($chunk['content'])) {
+                $flattened[] = $this->normalizeChunk($chunk);
+            } elseif (is_array($chunk)) {
+                // Handle nested arrays
+                foreach ($chunk as $subChunk) {
+                    if (is_array($subChunk) && isset($subChunk['content']) && !empty($subChunk['content'])) {
+                        $flattened[] = $this->normalizeChunk($subChunk);
                     }
                 }
             }

@@ -62,14 +62,22 @@ class Lumina
     public function ask($question, $useCache = true)
     {
         $startTime = microtime(true);
+
+        // If no AI driver is set, use Vanilla PHP
+        if (!isset($this->aiDriver)) {
+            $answer = $this->generateAnswerFromVanillaPhp($question);
+            return [
+                'answer' => $answer,
+                'response_time' => round((microtime(true) - $startTime) * 1000, 2),
+            ];
+        }
+
         $results = $this->vectorStore->search($question, 3);
         $searchTime = (microtime(true) - $startTime) * 1000;
 
         if (empty($results)) {
             return [
                 'answer' => "I couldn't find any relevant information to answer your question.",
-                'sources' => [],
-                'confidence' => 0,
                 'response_time' => round((microtime(true) - $startTime) * 1000, 2)
             ];
         }
@@ -79,7 +87,7 @@ class Lumina
 
         // Generate answer
         $genStart = microtime(true);
-        $answer = $this->generateAnswer($question, $context);
+        $answer = $this->generateAnswerFromAI($question, $context);
         $genTime = (microtime(true) - $genStart) * 1000;
 
         // Prepare response
@@ -112,17 +120,27 @@ class Lumina
     /**
      * Generate answer using AI model
      */
-    private function generateAnswer($question, $context)
+    private function generateAnswerFromAI($question, $context)
     {
         $prompt = "Context:\n$context\n\n" .
             "Question: $question\n\n" .
             "Answer based only on the context above:";
 
-        // Set the vanilla php driver if not set
-        $this->aiDriver ??= new Vanilla($this->vectorStore->getChunks());
-
         try {
             return $this->aiDriver->ask($prompt);
+        } catch (\Throwable $e) {
+            return "Error generating answer: " . $e->getMessage();
+        }
+    }
+
+    /**
+     * Generate answer using Vanilla PHP driver
+     */
+    private function generateAnswerFromVanillaPhp($question)
+    {
+        try {
+            $vanilla = new Vanilla();
+            return $vanilla->ask($question, $this->vectorStore->getChunks());
         } catch (\Throwable $e) {
             return "Error generating answer: " . $e->getMessage();
         }
