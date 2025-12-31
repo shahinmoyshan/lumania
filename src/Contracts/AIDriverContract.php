@@ -2,7 +2,7 @@
 
 namespace Lumina\Contracts;
 
-interface AIContract
+interface AIDriverContract
 {
     public function ask(string $prompt, array $options = []): string;
 }

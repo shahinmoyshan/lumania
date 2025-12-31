@@ -2,11 +2,11 @@
 
 namespace Lumina\Drivers;
 
-use Lumina\Contracts\AIContract;
+use Lumina\Contracts\AIDriverContract;
 use Spark\Facades\Http;
 use function sprintf;
 
-class DeepSeek implements AIContract
+class DeepSeek implements AIDriverContract
 {
     /** @param string The API endpoint for the DeepSeek AI. */
     private const API_ENDPOINT = 'https://api.deepseek.com/chat/completions';

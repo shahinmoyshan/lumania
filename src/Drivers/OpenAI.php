@@ -2,11 +2,11 @@
 
 namespace Lumina\Drivers;
 
-use Lumina\Contracts\AIContract;
+use Lumina\Contracts\AIDriverContract;
 use Spark\Facades\Http;
 use function sprintf;
 
-class OpenAI implements AIContract
+class OpenAI implements AIDriverContract
 {
     /** @var string The API endpoint for the OpenAI Chat Completions API */
     private const API_ENDPOINT = 'https://api.openai.com/v1/chat/completions';

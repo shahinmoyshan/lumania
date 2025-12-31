@@ -2,16 +2,16 @@
 
 namespace Lumina;
 
-use Lumina\Contracts\AIContract;
+use Lumina\Contracts\AIDriverContract;
 use Lumina\Drivers\Vanilla;
 
 class Lumina
 {
     private DocumentLoader $documentLoader;
     private VectorStore $vectorStore;
-    private AIContract $aiDriver;
+    private AIDriverContract $aiDriver;
 
-    public function __construct(null|AIContract $driver = null, array $config = [])
+    public function __construct(null|AIDriverContract $driver = null, array $config = [])
     {
         $config = [
             'documents_path' => storage_dir('documents'),

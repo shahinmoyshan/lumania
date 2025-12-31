@@ -2,11 +2,11 @@
 
 namespace Lumina\Drivers;
 
-use Lumina\Contracts\AIContract;
+use Lumina\Contracts\AIDriverContract;
 use Spark\Facades\Http;
 use function sprintf;
 
-class Ollama implements AIContract
+class Ollama implements AIDriverContract
 {
     private string $API_ENDPOINT = 'http://localhost:11434';
 

@@ -2,11 +2,11 @@
 
 namespace Lumina\Drivers;
 
-use Lumina\Contracts\AIContract;
+use Lumina\Contracts\AIDriverContract;
 use Spark\Facades\Http;
 use function sprintf;
 
-class Gemini implements AIContract
+class Gemini implements AIDriverContract
 {
     /** @param string The API endpoint for the Gemini AI Content Generation API. */
     private const API_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/';

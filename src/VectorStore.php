@@ -148,7 +148,7 @@ class VectorStore
         $words = preg_split('/\s+/', $text, -1, PREG_SPLIT_NO_EMPTY);
 
         // Remove stop words
-        $stopWords = ['the', 'is', 'at', 'which', 'on', 'a', 'an', 'and', 'or', 'but', 'in', 'with', 'to', 'for', 'of', 'as', 'by', 'that', 'this', 'it', 'from', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had'];
+        $stopWords = require __DIR__ . '/resources/inc/stopwords.php';
         $words = array_filter($words, function ($word) use ($stopWords) {
             return strlen($word) > 2 && !in_array($word, $stopWords);
         });
