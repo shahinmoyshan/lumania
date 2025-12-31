@@ -4,9 +4,11 @@ namespace Lumina;
 class VectorStore
 {
     private $chunks = [];
+    private $chunkMap = []; // Map chunk IDs to array indices
     private $index = [];
     private $idf = [];
     private $cacheFile;
+    private $tokenCache = []; // Cache for tokenization results
 
     public function __construct($cacheFile = null)
     {
@@ -19,10 +21,23 @@ class VectorStore
     public function addChunks(array $chunks)
     {
         $this->chunks = $chunks;
+        $this->buildChunkMap();
         $this->buildIndex();
 
         if ($this->cacheFile) {
             $this->saveCache();
+        }
+    }
+
+    /**
+     * Build mapping from chunk ID to array index
+     */
+    private function buildChunkMap()
+    {
+        $this->chunkMap = [];
+        foreach ($this->chunks as $index => $chunk) {
+            $chunkId = $chunk['id'] ?? $index;
+            $this->chunkMap[$chunkId] = $index;
         }
     }
 
@@ -36,6 +51,7 @@ class VectorStore
             $this->chunks = $data['chunks'];
             $this->index = $data['index'];
             $this->idf = $data['idf'];
+            $this->buildChunkMap();
             return true;
         }
         return false;
@@ -56,15 +72,19 @@ class VectorStore
     }
 
     /**
-     * Build TF-IDF index
+     * Build TF-IDF index with normalized TF and smoothing
      */
     private function buildIndex()
     {
         $documentFrequency = [];
         $totalDocs = count($this->chunks);
+        
+        if ($totalDocs == 0) {
+            return;
+        }
 
-        // Calculate document frequency
-        foreach ($this->chunks as $chunkId => $chunk) {
+        // Calculate document frequency for all terms
+        foreach ($this->chunks as $index => $chunk) {
             $terms = $this->tokenize($chunk['content']);
             $uniqueTerms = array_unique($terms);
 
@@ -76,113 +96,271 @@ class VectorStore
             }
         }
 
-        // Calculate IDF
+        // Calculate IDF with smoothing (add 1 to prevent division by zero)
         foreach ($documentFrequency as $term => $df) {
-            $this->idf[$term] = log($totalDocs / $df);
+            // IDF = log((total_docs + 1) / (df + 1)) - smoothing prevents log(0)
+            $this->idf[$term] = log(($totalDocs + 1) / ($df + 1)) + 1;
         }
 
-        // Build TF-IDF vectors for each chunk
-        foreach ($this->chunks as $chunkId => $chunk) {
+        // Build normalized TF-IDF vectors for each chunk
+        foreach ($this->chunks as $index => $chunk) {
             $terms = $this->tokenize($chunk['content']);
             $termFreq = array_count_values($terms);
-            $vector = [];
-
-            foreach ($termFreq as $term => $tf) {
-                $idf = $this->idf[$term] ?? 0;
-                $vector[$term] = $tf * $idf;
+            $totalTerms = count($terms);
+            
+            if ($totalTerms == 0) {
+                $this->index[$index] = [];
+                continue;
             }
 
-            $this->index[$chunkId] = $vector;
+            $vector = [];
+
+            // Calculate normalized TF-IDF
+            foreach ($termFreq as $term => $tf) {
+                // Normalized TF: log(1 + tf) / log(1 + total_terms)
+                // This prevents bias towards longer documents
+                $normalizedTf = log(1 + $tf) / log(1 + $totalTerms);
+                $idf = $this->idf[$term] ?? 0;
+                $vector[$term] = $normalizedTf * $idf;
+            }
+
+            // Add n-grams for better semantic matching
+            $bigrams = $this->extractNgrams($terms, 2);
+            $trigrams = $this->extractNgrams($terms, 3);
+            
+            foreach ($bigrams as $bigram) {
+                if (!isset($vector[$bigram])) {
+                    $vector[$bigram] = 0;
+                }
+                $vector[$bigram] += 0.3 * ($this->idf[$bigram] ?? 0); // Lower weight for n-grams
+            }
+            
+            foreach ($trigrams as $trigram) {
+                if (!isset($vector[$trigram])) {
+                    $vector[$trigram] = 0;
+                }
+                $vector[$trigram] += 0.2 * ($this->idf[$trigram] ?? 0);
+            }
+
+            // Normalize vector for cosine similarity
+            $this->index[$index] = $this->normalizeVector($vector);
         }
     }
 
     /**
-     * Search for relevant chunks
+     * Extract n-grams from token array
+     */
+    private function extractNgrams(array $tokens, $n)
+    {
+        $ngrams = [];
+        $count = count($tokens);
+        
+        for ($i = 0; $i <= $count - $n; $i++) {
+            $ngram = implode('_', array_slice($tokens, $i, $n));
+            $ngrams[] = $ngram;
+        }
+        
+        return $ngrams;
+    }
+
+    /**
+     * Normalize vector to unit length
+     */
+    private function normalizeVector(array $vector)
+    {
+        $magnitude = 0;
+        foreach ($vector as $value) {
+            $magnitude += $value * $value;
+        }
+        
+        if ($magnitude == 0) {
+            return $vector;
+        }
+        
+        $magnitude = sqrt($magnitude);
+        $normalized = [];
+        foreach ($vector as $term => $value) {
+            $normalized[$term] = $value / $magnitude;
+        }
+        
+        return $normalized;
+    }
+
+    /**
+     * Search for relevant chunks with optimizations
      */
     public function search($query, $topK = 3)
     {
-        $queryTerms = $this->tokenize($query);
-        $queryVector = [];
-
-        // Build query vector
-        $termFreq = array_count_values($queryTerms);
-        foreach ($termFreq as $term => $tf) {
-            $idf = $this->idf[$term] ?? 0;
-            $queryVector[$term] = $tf * $idf;
+        if (empty(trim($query))) {
+            return [];
         }
+
+        $queryTerms = $this->tokenize($query);
+        
+        if (empty($queryTerms)) {
+            return [];
+        }
+
+        $queryVector = [];
+        $termFreq = array_count_values($queryTerms);
+        $totalTerms = count($queryTerms);
+
+        // Build normalized query vector
+        foreach ($termFreq as $term => $tf) {
+            $normalizedTf = log(1 + $tf) / log(1 + $totalTerms);
+            $idf = $this->idf[$term] ?? 0;
+            $queryVector[$term] = $normalizedTf * $idf;
+        }
+
+        // Add n-grams to query
+        $bigrams = $this->extractNgrams($queryTerms, 2);
+        $trigrams = $this->extractNgrams($queryTerms, 3);
+        
+        foreach ($bigrams as $bigram) {
+            if (!isset($queryVector[$bigram])) {
+                $queryVector[$bigram] = 0;
+            }
+            $queryVector[$bigram] += 0.3 * ($this->idf[$bigram] ?? 0);
+        }
+        
+        foreach ($trigrams as $trigram) {
+            if (!isset($queryVector[$trigram])) {
+                $queryVector[$trigram] = 0;
+            }
+            $queryVector[$trigram] += 0.2 * ($this->idf[$trigram] ?? 0);
+        }
+
+        // Normalize query vector
+        $queryVector = $this->normalizeVector($queryVector);
 
         // Calculate cosine similarity with all chunks
         $scores = [];
-        foreach ($this->index as $chunkId => $docVector) {
+        foreach ($this->index as $chunkIndex => $docVector) {
             $similarity = $this->cosineSimilarity($queryVector, $docVector);
-            $scores[$chunkId] = $similarity;
+            
+            // Early termination: skip zero similarity chunks
+            if ($similarity > 0) {
+                $scores[$chunkIndex] = $similarity;
+            }
         }
 
-        // Sort by score
+        // Sort by score (descending)
         arsort($scores);
 
         // Get top K results
         $results = [];
         $count = 0;
-        foreach ($scores as $chunkId => $score) {
-            if ($count >= $topK || $score <= 0)
+        foreach ($scores as $chunkIndex => $score) {
+            if ($count >= $topK) {
                 break;
+            }
 
-            $results[] = [
-                'chunk' => $this->chunks[$chunkId],
-                'score' => $score
-            ];
-            $count++;
+            if (isset($this->chunks[$chunkIndex])) {
+                $results[] = [
+                    'chunk' => $this->chunks[$chunkIndex],
+                    'score' => $score
+                ];
+                $count++;
+            }
         }
 
         return $results;
     }
 
     /**
-     * Tokenize text
+     * Enhanced tokenization with special case handling
      */
     private function tokenize($text)
     {
-        $text = strtolower($text);
-        $text = preg_replace('/[^a-z0-9\s]/', ' ', $text);
+        // Check cache first
+        $cacheKey = md5($text);
+        if (isset($this->tokenCache[$cacheKey])) {
+            return $this->tokenCache[$cacheKey];
+        }
+
+        $text = strtolower(trim($text));
+        
+        if (empty($text)) {
+            return [];
+        }
+
+        // Preserve important tokens: emails, URLs, phone numbers
+        $preserved = [];
+        $text = preg_replace_callback(
+            '/(https?:\/\/[^\s]+|www\.[^\s]+|[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}|\+?\d{1,3}[-.\s]?\(?\d{1,4}\)?[-.\s]?\d{1,4}[-.\s]?\d{1,9})/',
+            function($matches) use (&$preserved) {
+                $key = '__PRESERVED_' . count($preserved) . '__';
+                $preserved[$key] = str_replace(['.', '@', ':', '/', '+', '-', '(', ')', ' '], ['_', '_at_', '_', '_', '_', '_', '_', '_', '_'], $matches[0]);
+                return $key;
+            },
+            $text
+        );
+
+        // Handle contractions
+        $contractions = [
+            "n't" => ' not',
+            "'re" => ' are',
+            "'ve" => ' have',
+            "'ll" => ' will',
+            "'d" => ' would',
+            "'m" => ' am',
+            "'s" => ' is'
+        ];
+        foreach ($contractions as $contraction => $expansion) {
+            $text = str_replace($contraction, $expansion, $text);
+        }
+
+        // Remove punctuation but preserve alphanumeric, spaces, and underscores
+        $text = preg_replace('/[^a-z0-9\s_]/', ' ', $text);
+        
+        // Split into words
         $words = preg_split('/\s+/', $text, -1, PREG_SPLIT_NO_EMPTY);
 
-        // Remove stop words
+        // Restore preserved tokens
+        foreach ($preserved as $key => $value) {
+            $words = array_map(function($word) use ($key, $value) {
+                return str_replace($key, $value, $word);
+            }, $words);
+        }
+
+        // Remove stop words and filter
         $stopWords = require __DIR__ . '/resources/inc/stopwords.php';
         $words = array_filter($words, function ($word) use ($stopWords) {
-            return strlen($word) > 2 && !in_array($word, $stopWords);
+            $word = trim($word);
+            // Keep words longer than 2 chars, not in stopwords, and not just numbers
+            return strlen($word) > 2 && 
+                   !in_array($word, $stopWords) && 
+                   !preg_match('/^\d+$/', $word);
         });
 
-        return array_values($words);
+        $result = array_values($words);
+        
+        // Cache result
+        $this->tokenCache[$cacheKey] = $result;
+        
+        return $result;
     }
 
     /**
-     * Calculate cosine similarity
+     * Calculate cosine similarity between two vectors
      */
     private function cosineSimilarity($vec1, $vec2)
     {
-        $dotProduct = 0;
-        $mag1 = 0;
-        $mag2 = 0;
+        if (empty($vec1) || empty($vec2)) {
+            return 0;
+        }
 
+        $dotProduct = 0;
         $allTerms = array_unique(array_merge(array_keys($vec1), array_keys($vec2)));
 
         foreach ($allTerms as $term) {
             $v1 = $vec1[$term] ?? 0;
             $v2 = $vec2[$term] ?? 0;
-
             $dotProduct += $v1 * $v2;
-            $mag1 += $v1 * $v1;
-            $mag2 += $v2 * $v2;
         }
 
-        $mag1 = sqrt($mag1);
-        $mag2 = sqrt($mag2);
-
-        if ($mag1 == 0 || $mag2 == 0)
-            return 0;
-
-        return $dotProduct / ($mag1 * $mag2);
+        // Since vectors are normalized, magnitude is 1, so cosine similarity = dot product
+        return $dotProduct;
     }
 
     /**
