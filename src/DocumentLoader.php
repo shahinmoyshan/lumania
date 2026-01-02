@@ -71,87 +71,138 @@ class DocumentLoader
 
         foreach ($documents as $doc) {
             $content = $this->normalizeText($doc['content']);
-            $paragraphs = $this->splitIntoParagraphs($content);
 
-            $currentChunk = '';
-            $currentSentences = [];
-            $overlapSentences = [];
+            // Detect document sections first for better boundary awareness
+            $sections = $this->splitIntoSections($content);
             $chunkIndex = 0;
+            $seenContent = []; // Track content hashes to prevent duplicates
 
-            foreach ($paragraphs as $paragraph) {
-                $paragraph = trim($paragraph);
-                if (empty($paragraph)) {
+            foreach ($sections as $section) {
+                $sectionChunks = $this->chunkSection($section, $doc['filename'], $chunkIndex, $seenContent);
+                foreach ($sectionChunks as $chunk) {
+                    $chunks[] = $chunk;
+                    $chunkIndex++;
+                }
+            }
+        }
+
+        return $chunks;
+    }
+
+    /**
+     * Split content into logical sections (by headers, major breaks)
+     */
+    private function splitIntoSections($content)
+    {
+        // Split by section headers (numbered sections, markdown headers, or title-like lines)
+        $sectionPattern = '/(?=^(?:#{1,6}\s+|\d+\.\s+[A-Z]|[A-Z][A-Za-z\s&]+(?:\n|$)(?=\n)))/m';
+        $sections = preg_split($sectionPattern, $content, -1, PREG_SPLIT_NO_EMPTY);
+
+        // If no sections found, treat entire content as one section
+        if (count($sections) <= 1) {
+            return [$content];
+        }
+
+        return array_filter(array_map('trim', $sections));
+    }
+
+    /**
+     * Chunk a single section with proper overlap and deduplication
+     */
+    private function chunkSection($section, $filename, &$chunkIndex, &$seenContent)
+    {
+        $chunks = [];
+        $paragraphs = $this->splitIntoParagraphs($section);
+
+        $currentChunk = '';
+        $currentSentences = [];
+        $lastOverlapText = '';
+
+        foreach ($paragraphs as $paragraph) {
+            $paragraph = trim($paragraph);
+            if (empty($paragraph)) {
+                continue;
+            }
+
+            // Check if this paragraph is a section header - try to keep it with following content
+            $isHeader = $this->isSectionHeader($paragraph);
+
+            $sentences = $this->splitIntoSentences($paragraph);
+
+            // If paragraph couldn't be split into sentences, treat whole paragraph as one unit
+            if (empty($sentences)) {
+                $sentences = [$paragraph];
+            }
+
+            foreach ($sentences as $sentence) {
+                $sentence = trim($sentence);
+                if (empty($sentence)) {
                     continue;
                 }
 
-                $sentences = $this->splitIntoSentences($paragraph);
+                $testChunk = trim($currentChunk . ' ' . $sentence);
+                $testLength = strlen($testChunk);
 
-                foreach ($sentences as $sentence) {
-                    $sentence = trim($sentence);
-                    if (empty($sentence)) {
+                // If adding this sentence would exceed chunk size
+                if ($testLength > $this->chunkSize && !empty($currentChunk)) {
+                    // Don't break if current chunk is too small (< 40% of target)
+                    if (strlen($currentChunk) < $this->chunkSize * 0.4) {
+                        $currentChunk = $testChunk;
+                        $currentSentences[] = $sentence;
                         continue;
                     }
 
-                    $testChunk = trim($currentChunk . ' ' . $sentence);
-                    $testLength = strlen($testChunk);
+                    // Save current chunk if not duplicate
+                    $chunkContent = trim($currentChunk);
+                    $contentHash = md5($chunkContent);
 
-                    // If adding this sentence would exceed chunk size
-                    if ($testLength > $this->chunkSize && !empty($currentChunk)) {
-                        // Save current chunk
-                        $chunkContent = trim($currentChunk);
+                    if (!isset($seenContent[$contentHash]) && strlen($chunkContent) > 50) {
+                        $seenContent[$contentHash] = true;
                         $chunks[] = [
-                            'id' => md5($doc['filename'] . '_' . $chunkIndex),
-                            'source' => $doc['filename'],
+                            'id' => md5($filename . '_' . $chunkIndex),
+                            'source' => $filename,
                             'content' => $chunkContent,
                             'chunk_index' => $chunkIndex,
                             'char_count' => strlen($chunkContent),
                             'word_count' => str_word_count($chunkContent),
                             'has_structure' => $this->hasStructure($chunkContent)
                         ];
-
-                        // Calculate overlap: use last N sentences based on chunkOverlap
-                        $overlapSentences = $this->getOverlapSentences($currentSentences, $this->chunkOverlap);
-                        $overlapText = implode(' ', $overlapSentences);
-
-                        // Start new chunk with overlap
-                        $currentChunk = trim($overlapText . ' ' . $sentence);
-                        $currentSentences = array_merge($overlapSentences, [$sentence]);
                         $chunkIndex++;
-                    } else {
-                        // Add sentence to current chunk
-                        $currentChunk = $testChunk;
-                        $currentSentences[] = $sentence;
                     }
-                }
 
-                // If paragraph break and chunk is getting large, consider breaking
-                if (strlen($currentChunk) > $this->chunkSize * 0.8 && !empty($currentChunk)) {
-                    // Save current chunk at paragraph boundary
-                    $chunkContent = trim($currentChunk);
-                    $chunks[] = [
-                        'id' => md5($doc['filename'] . '_' . $chunkIndex),
-                        'source' => $doc['filename'],
-                        'content' => $chunkContent,
-                        'chunk_index' => $chunkIndex,
-                        'char_count' => strlen($chunkContent),
-                        'word_count' => str_word_count($chunkContent),
-                        'has_structure' => $this->hasStructure($chunkContent)
-                    ];
+                    // Calculate overlap - use fewer sentences for less redundancy
+                    $overlapSentences = $this->getOverlapSentences($currentSentences, min($this->chunkOverlap, 30));
+                    $overlapText = implode(' ', $overlapSentences);
+
+                    // Avoid using same overlap text repeatedly
+                    if ($overlapText === $lastOverlapText) {
+                        $overlapText = '';
+                        $overlapSentences = [];
+                    }
+                    $lastOverlapText = $overlapText;
 
                     // Start new chunk with overlap
-                    $overlapSentences = $this->getOverlapSentences($currentSentences, $this->chunkOverlap);
-                    $currentChunk = implode(' ', $overlapSentences);
-                    $currentSentences = $overlapSentences;
-                    $chunkIndex++;
+                    $currentChunk = trim($overlapText . ' ' . $sentence);
+                    $currentSentences = array_merge($overlapSentences, [$sentence]);
+                } else {
+                    // Add sentence to current chunk
+                    $currentChunk = $testChunk;
+                    $currentSentences[] = $sentence;
                 }
             }
+        }
 
-            // Add remaining chunk
-            if (!empty(trim($currentChunk))) {
-                $chunkContent = trim($currentChunk);
+        // Add remaining chunk if substantial
+        if (!empty(trim($currentChunk))) {
+            $chunkContent = trim($currentChunk);
+            $contentHash = md5($chunkContent);
+
+            // Only add if not duplicate and has meaningful content
+            if (!isset($seenContent[$contentHash]) && strlen($chunkContent) > 50) {
+                $seenContent[$contentHash] = true;
                 $chunks[] = [
-                    'id' => md5($doc['filename'] . '_' . $chunkIndex),
-                    'source' => $doc['filename'],
+                    'id' => md5($filename . '_' . $chunkIndex),
+                    'source' => $filename,
                     'content' => $chunkContent,
                     'chunk_index' => $chunkIndex,
                     'char_count' => strlen($chunkContent),
@@ -162,6 +213,21 @@ class DocumentLoader
         }
 
         return $chunks;
+    }
+
+    /**
+     * Check if text appears to be a section header
+     */
+    private function isSectionHeader($text)
+    {
+        $text = trim($text);
+        // Short text with title case or all caps, or starts with number followed by dot
+        return strlen($text) < 100 && (
+            preg_match('/^#{1,6}\s+/', $text) ||           // Markdown header
+            preg_match('/^\d+\.\s+[A-Z]/', $text) ||       // Numbered section
+            preg_match('/^[A-Z][A-Za-z\s&]+$/', $text) ||  // Title Case line
+            preg_match('/^[A-Z\s&]+$/', $text)             // ALL CAPS line
+        );
     }
 
     /**
@@ -188,6 +254,7 @@ class DocumentLoader
 
     /**
      * Get overlap sentences based on word count
+     * Limited to prevent excessive duplication
      */
     private function getOverlapSentences(array $sentences, $overlapWords)
     {
@@ -197,15 +264,23 @@ class DocumentLoader
 
         $overlapSentences = [];
         $wordCount = 0;
+        $maxSentences = 2; // Limit overlap to max 2 sentences to prevent duplication
+        $sentenceCount = 0;
 
-        // Get sentences from the end until we reach overlap word count
-        for ($i = count($sentences) - 1; $i >= 0; $i--) {
+        // Get sentences from the end until we reach overlap word count or max sentences
+        for ($i = count($sentences) - 1; $i >= 0 && $sentenceCount < $maxSentences; $i--) {
             $sentence = $sentences[$i];
             $sentenceWords = str_word_count($sentence);
+
+            // Don't include very short sentences as overlap (likely headers or fragments)
+            if ($sentenceWords < 5 && !empty($overlapSentences)) {
+                continue;
+            }
 
             if ($wordCount + $sentenceWords <= $overlapWords || empty($overlapSentences)) {
                 array_unshift($overlapSentences, $sentence);
                 $wordCount += $sentenceWords;
+                $sentenceCount++;
             } else {
                 break;
             }

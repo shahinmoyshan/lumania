@@ -78,21 +78,40 @@ class VectorStore
     {
         $documentFrequency = [];
         $totalDocs = count($this->chunks);
-        
+
         if ($totalDocs == 0) {
             return;
         }
 
-        // Calculate document frequency for all terms
+        // Calculate document frequency for all terms AND n-grams
         foreach ($this->chunks as $index => $chunk) {
             $terms = $this->tokenize($chunk['content']);
             $uniqueTerms = array_unique($terms);
 
+            // Count single terms
             foreach ($uniqueTerms as $term) {
                 if (!isset($documentFrequency[$term])) {
                     $documentFrequency[$term] = 0;
                 }
                 $documentFrequency[$term]++;
+            }
+
+            // Count bigrams and trigrams for IDF calculation
+            $bigrams = array_unique($this->extractNgrams($terms, 2));
+            $trigrams = array_unique($this->extractNgrams($terms, 3));
+
+            foreach ($bigrams as $bigram) {
+                if (!isset($documentFrequency[$bigram])) {
+                    $documentFrequency[$bigram] = 0;
+                }
+                $documentFrequency[$bigram]++;
+            }
+
+            foreach ($trigrams as $trigram) {
+                if (!isset($documentFrequency[$trigram])) {
+                    $documentFrequency[$trigram] = 0;
+                }
+                $documentFrequency[$trigram]++;
             }
         }
 
@@ -107,7 +126,7 @@ class VectorStore
             $terms = $this->tokenize($chunk['content']);
             $termFreq = array_count_values($terms);
             $totalTerms = count($terms);
-            
+
             if ($totalTerms == 0) {
                 $this->index[$index] = [];
                 continue;
@@ -127,14 +146,14 @@ class VectorStore
             // Add n-grams for better semantic matching
             $bigrams = $this->extractNgrams($terms, 2);
             $trigrams = $this->extractNgrams($terms, 3);
-            
+
             foreach ($bigrams as $bigram) {
                 if (!isset($vector[$bigram])) {
                     $vector[$bigram] = 0;
                 }
                 $vector[$bigram] += 0.3 * ($this->idf[$bigram] ?? 0); // Lower weight for n-grams
             }
-            
+
             foreach ($trigrams as $trigram) {
                 if (!isset($vector[$trigram])) {
                     $vector[$trigram] = 0;
@@ -154,12 +173,12 @@ class VectorStore
     {
         $ngrams = [];
         $count = count($tokens);
-        
+
         for ($i = 0; $i <= $count - $n; $i++) {
             $ngram = implode('_', array_slice($tokens, $i, $n));
             $ngrams[] = $ngram;
         }
-        
+
         return $ngrams;
     }
 
@@ -172,17 +191,17 @@ class VectorStore
         foreach ($vector as $value) {
             $magnitude += $value * $value;
         }
-        
+
         if ($magnitude == 0) {
             return $vector;
         }
-        
+
         $magnitude = sqrt($magnitude);
         $normalized = [];
         foreach ($vector as $term => $value) {
             $normalized[$term] = $value / $magnitude;
         }
-        
+
         return $normalized;
     }
 
@@ -196,7 +215,7 @@ class VectorStore
         }
 
         $queryTerms = $this->tokenize($query);
-        
+
         if (empty($queryTerms)) {
             return [];
         }
@@ -215,14 +234,14 @@ class VectorStore
         // Add n-grams to query
         $bigrams = $this->extractNgrams($queryTerms, 2);
         $trigrams = $this->extractNgrams($queryTerms, 3);
-        
+
         foreach ($bigrams as $bigram) {
             if (!isset($queryVector[$bigram])) {
                 $queryVector[$bigram] = 0;
             }
             $queryVector[$bigram] += 0.3 * ($this->idf[$bigram] ?? 0);
         }
-        
+
         foreach ($trigrams as $trigram) {
             if (!isset($queryVector[$trigram])) {
                 $queryVector[$trigram] = 0;
@@ -237,7 +256,7 @@ class VectorStore
         $scores = [];
         foreach ($this->index as $chunkIndex => $docVector) {
             $similarity = $this->cosineSimilarity($queryVector, $docVector);
-            
+
             // Early termination: skip zero similarity chunks
             if ($similarity > 0) {
                 $scores[$chunkIndex] = $similarity;
@@ -279,24 +298,53 @@ class VectorStore
         }
 
         $text = strtolower(trim($text));
-        
+
         if (empty($text)) {
             return [];
         }
 
-        // Preserve important tokens: emails, URLs, phone numbers
-        $preserved = [];
+        // Extract searchable parts from emails, URLs, phone numbers
+        // Instead of preserving as one token, extract meaningful parts
+        $extractedTokens = [];
+
+        // Extract email parts: contact@techcorp.com -> contact, techcorp, com
         $text = preg_replace_callback(
-            '/(https?:\/\/[^\s]+|www\.[^\s]+|[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}|\+?\d{1,3}[-.\s]?\(?\d{1,4}\)?[-.\s]?\d{1,4}[-.\s]?\d{1,9})/',
-            function($matches) use (&$preserved) {
-                $key = '__PRESERVED_' . count($preserved) . '__';
-                $preserved[$key] = str_replace(['.', '@', ':', '/', '+', '-', '(', ')', ' '], ['_', '_at_', '_', '_', '_', '_', '_', '_', '_'], $matches[0]);
-                return $key;
+            '/([a-zA-Z0-9._%+-]+)@([a-zA-Z0-9.-]+)\.([a-zA-Z]{2,})/',
+            function ($matches) use (&$extractedTokens) {
+                // Add individual parts as tokens
+                $extractedTokens[] = strtolower($matches[1]); // username part
+                $domainParts = explode('.', $matches[2]);
+                foreach ($domainParts as $part) {
+                    if (strlen($part) > 1) {
+                        $extractedTokens[] = strtolower($part);
+                    }
+                }
+                return ' ' . implode(' ', $extractedTokens) . ' ';
             },
             $text
         );
 
-        // Handle contractions
+        // Extract URL parts: https://github.com/techcorp -> github, techcorp
+        $text = preg_replace_callback(
+            '/https?:\/\/([^\s\/]+)(\/[^\s]*)?/',
+            function ($matches) use (&$extractedTokens) {
+                $domain = $matches[1];
+                $path = $matches[2] ?? '';
+                $parts = preg_split('/[.\/\-_]+/', $domain . $path, -1, PREG_SPLIT_NO_EMPTY);
+                foreach ($parts as $part) {
+                    if (strlen($part) > 1 && !in_array($part, ['www', 'http', 'https', 'com', 'org', 'net'])) {
+                        $extractedTokens[] = strtolower($part);
+                    }
+                }
+                return ' ' . implode(' ', $parts) . ' ';
+            },
+            $text
+        );
+
+        // Normalize phone numbers - just remove them, not useful for search
+        $text = preg_replace('/\+?\d{1,3}[-.\s]?\(?\d{1,4}\)?[-.\s]?\d{1,4}[-.\s]?\d{1,9}/', ' ', $text);
+
+        // Handle contractions (but not possessives - 's is often possessive, not "is")
         $contractions = [
             "n't" => ' not',
             "'re" => ' are',
@@ -304,40 +352,53 @@ class VectorStore
             "'ll" => ' will',
             "'d" => ' would',
             "'m" => ' am',
-            "'s" => ' is'
+            // Note: 's removed - too ambiguous (possessive vs contraction)
         ];
         foreach ($contractions as $contraction => $expansion) {
             $text = str_replace($contraction, $expansion, $text);
         }
+        // Remove remaining apostrophes (possessives)
+        $text = str_replace("'s", '', $text);
+        $text = str_replace("'", '', $text);
 
         // Remove punctuation but preserve alphanumeric, spaces, and underscores
         $text = preg_replace('/[^a-z0-9\s_]/', ' ', $text);
-        
+
         // Split into words
         $words = preg_split('/\s+/', $text, -1, PREG_SPLIT_NO_EMPTY);
 
-        // Restore preserved tokens
-        foreach ($preserved as $key => $value) {
-            $words = array_map(function($word) use ($key, $value) {
-                return str_replace($key, $value, $word);
-            }, $words);
-        }
-
         // Remove stop words and filter
         $stopWords = require __DIR__ . '/resources/inc/stopwords.php';
-        $words = array_filter($words, function ($word) use ($stopWords) {
+
+        // Important short terms to always keep (tech terms, abbreviations)
+        $keepShortTerms = ['ai', 'ml', 'ui', 'ux', 'go', 'js', 'db', 'os', 'it', 'qa', 'hr', 'pr', 'pm', 'vp', 'ceo', 'cto', 'cfo', 'api', 'aws', 'gcp', 'ios', 'sql', 'css', 'php', 'vue', 'mvp'];
+
+        $words = array_filter($words, function ($word) use ($stopWords, $keepShortTerms) {
             $word = trim($word);
-            // Keep words longer than 2 chars, not in stopwords, and not just numbers
-            return strlen($word) > 2 && 
-                   !in_array($word, $stopWords) && 
-                   !preg_match('/^\d+$/', $word);
+            $len = strlen($word);
+
+            // Always keep important short terms
+            if (in_array($word, $keepShortTerms)) {
+                return true;
+            }
+
+            // Keep years (1900-2099) - important temporal context
+            if (preg_match('/^(19|20)\d{2}$/', $word)) {
+                return true;
+            }
+
+            // Keep words: 2+ chars (not just 1), not in stopwords
+            // Filter pure numbers except years (handled above)
+            return $len >= 2 &&
+                !in_array($word, $stopWords) &&
+                !preg_match('/^\d+$/', $word);
         });
 
         $result = array_values($words);
-        
+
         // Cache result
         $this->tokenCache[$cacheKey] = $result;
-        
+
         return $result;
     }
 
