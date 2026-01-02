@@ -21,10 +21,9 @@ class Lumina
             ...$config
         ];
 
-        if ($driver !== null) {
-            $this->aiDriver = $driver; // Use provided AI driver
-        }
+        $driver ??= new Vanilla();
 
+        $this->aiDriver = $driver; // Use provided AI driver
         $this->documentLoader = new DocumentLoader($config['documents_path'], $config['chunk_size'], $config['chunk_overlap']);
         $this->vectorStore = new VectorStore($config['vector_cache']);
     }
@@ -64,10 +63,9 @@ class Lumina
         $startTime = microtime(true);
 
         // If no AI driver is set, use Vanilla PHP
-        if (!isset($this->aiDriver)) {
-            $answer = $this->generateAnswerFromVanillaPhp($question);
+        if ($this->aiDriver instanceof Vanilla) {
             return [
-                'answer' => $answer,
+                'answer' => $this->aiDriver->ask($question, $this->vectorStore->getChunks()),
                 'response_time' => round((microtime(true) - $startTime) * 1000, 2),
             ];
         }
@@ -128,19 +126,6 @@ class Lumina
 
         try {
             return $this->aiDriver->ask($prompt);
-        } catch (\Throwable $e) {
-            return "Error generating answer: " . $e->getMessage();
-        }
-    }
-
-    /**
-     * Generate answer using Vanilla PHP driver
-     */
-    private function generateAnswerFromVanillaPhp($question)
-    {
-        try {
-            $vanilla = new Vanilla();
-            return $vanilla->ask($question, $this->vectorStore->getChunks());
         } catch (\Throwable $e) {
             return "Error generating answer: " . $e->getMessage();
         }

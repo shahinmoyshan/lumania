@@ -852,13 +852,13 @@ return new class extends VanillaModelContract {
             $boost *= 1.3;
         }
 
-        if ($type === 'location' && preg_match('/\baddress\b|\blocation\b|\boffice\b|\bheadquarters?\b|\bheadquartered\b/i', $content)) {
+        if ($type === 'location' && preg_match('/\baddress\b|\blocation\b|\boffice\b|\bheadquarters?\b|\bheadquartered\b|\blocated\b/i', $content)) {
             $boost *= 1.4;
         }
 
-        // Additional boost for content containing city/address patterns for location queries
-        if ($type === 'location' && preg_match('/\b(?:san\s+francisco|new\s+york|london|tokyo|california|CA\s+\d{5})\b/i', $content)) {
-            $boost *= 1.25;
+        // Boost for content with address-like patterns (numbers followed by words, postal codes)
+        if ($type === 'location' && preg_match('/\d+\s+[A-Z][a-z]+|\b[A-Z]{2}\s*\d{5}\b/i', $content)) {
+            $boost *= 1.2;
         }
 
         // Enhanced boost for list-type content when list is required
@@ -871,15 +871,10 @@ return new class extends VanillaModelContract {
             elseif (preg_match('/^[\d\-•]|\n[\d\-•]/m', $content)) {
                 $boost *= 1.3;
             }
-            // Check for "Our Services" or similar section headers
+            // Check for content that describes offerings
             if (preg_match('/\b(?:services?|offering|offer|provide|include)\b/i', $content)) {
                 $boost *= 1.2;
             }
-        }
-
-        // Boost for exact phrase matches like "Our Services"
-        if (preg_match('/\bour\s+services?\b/i', $content)) {
-            $boost *= 1.25;
         }
 
         // Boost for temporal content when temporal element detected
@@ -1119,26 +1114,17 @@ return new class extends VanillaModelContract {
             $boost += 0.15;
         }
 
-        // Location type boost - this is critical for headquarters questions
+        // Location type boost
         if ($type === 'location') {
-            // Strong boost for location-related keywords
+            // Boost for location-related keywords
             if (preg_match('/\b(?:headquarters?|headquartered|located|location|office|address)\b/i', $sentenceLower)) {
                 $boost += 0.5;
-                $baseScore += 0.2; // Significant base for location content
-            }
-            // Boost for city names
-            if (preg_match('/\b(?:san\s+francisco|new\s+york|london|tokyo|california|CA)\b/i', $sentenceLower)) {
-                $boost += 0.35;
-                $baseScore += 0.15;
-            }
-            // Boost for address patterns
-            if (preg_match('/\d+\s+[A-Z][a-z]+\s+(?:Drive|Street|Avenue|Road|Blvd|Way|Suite)/i', $sentence)) {
-                $boost += 0.4;
                 $baseScore += 0.2;
             }
-            // Phone number pattern
-            if (preg_match('/\+?\d[\d\s\-()]+\d/', $sentence) && strlen($sentence) < 100) {
-                $boost += 0.2;
+            // Boost for address-like patterns (number + words, or postal code patterns)
+            if (preg_match('/\d+\s+[A-Z][a-z]+(?:\s+[A-Za-z]+)*/i', $sentence)) {
+                $boost += 0.3;
+                $baseScore += 0.1;
             }
         }
 
@@ -1317,24 +1303,24 @@ return new class extends VanillaModelContract {
                 'low' => ['I found some guidance:', 'There\'s some information about this:'],
             ],
             'list' => [
-                'high' => ['Here are the services we offer:', 'Our services include:', 'We provide the following services:'],
-                'medium' => ['Based on the documentation, here are the available services:', 'I found the following services:'],
-                'low' => ['Here are some of the services I found:', 'The available services include:'],
+                'high' => ['', 'Here\'s what I found:', ''],
+                'medium' => ['Based on the documentation:', 'I found the following:'],
+                'low' => ['Here\'s what I found:', 'The available information includes:'],
             ],
             'pricing' => [
-                'high' => ['Here\'s the pricing information:', 'The costs are as follows:', ''],
-                'medium' => ['Based on our pricing structure,', 'The documentation shows these prices:'],
-                'low' => ['I found some pricing details:', 'There\'s some pricing information available:'],
+                'high' => ['', 'The pricing details are:', ''],
+                'medium' => ['Based on the pricing information:', 'Here\'s the pricing structure:'],
+                'low' => ['I found some pricing details:', 'Here\'s what I found on pricing:'],
             ],
             'location' => [
-                'high' => ['', 'Here\'s the location information:', 'The headquarters is located at:'],
-                'medium' => ['Based on the available information,', 'The documentation shows:'],
-                'low' => ['I found some location details:', 'Here\'s what I found about the location:'],
+                'high' => ['', 'Here\'s the location information:', ''],
+                'medium' => ['Based on the available information,', ''],
+                'low' => ['I found some information:', ''],
             ],
             'contact' => [
-                'high' => ['You can reach out through:', 'Here are the contact details:', ''],
-                'medium' => ['Based on the contact information available,', 'From what I found,'],
-                'low' => ['I located some contact information:', 'There are contact details in the records:'],
+                'high' => ['', 'Here are the contact details:', ''],
+                'medium' => ['Based on the available information,', ''],
+                'low' => ['I found some contact information:', ''],
             ],
         ];
 
@@ -1347,16 +1333,10 @@ return new class extends VanillaModelContract {
         if ($style === 'comprehensive' && $confidence > self::HIGH_CONFIDENCE) {
             $emphasisPhrases = [
                 'I\'d be happy to help with that.',
-                'That\'s a great question.',
-                'Let me provide you with detailed information.',
+                'Let me provide you with the information.',
             ];
             $emphasis = $emphasisPhrases[array_rand($emphasisPhrases)];
             $opening = $emphasis . ' ' . $opening;
-        } elseif ($type === 'list' && $confidence > self::MEDIUM_CONFIDENCE) {
-            // More natural openings for list questions
-            if (empty($opening)) {
-                $opening = 'Here are the services:';
-            }
         }
 
         return trim($opening);
@@ -1371,123 +1351,44 @@ return new class extends VanillaModelContract {
             return "I don't have specific information about that in the available documents.";
         }
 
-        // Route to appropriate content generator
-        if ($analysis['requires_list'] || $type === 'list') {
-            return $this->generateListContent($sentences, $entities);
-        }
-
+        // Route to appropriate content generator based on type
         if ($analysis['is_comparative']) {
             return $this->generateComparativeContent($sentences);
         }
 
-        if (in_array($type, ['pricing', 'contact', 'location'])) {
-            return $this->generateSpecificInfoContent($sentences, $type, $entities);
+        // For list, pricing, contact, location - just return relevant content as-is
+        if ($analysis['requires_list'] || in_array($type, ['list', 'pricing', 'contact', 'location'])) {
+            return $this->generateSimpleContent($sentences);
         }
 
         return $this->generateNarrativeContent($sentences, $analysis);
     }
 
     /**
-     * Generate list-formatted content with proper extraction and formatting
+     * Generate simple content - returns relevant sentences without over-processing
      */
-    private function generateListContent(array $sentences, array $entities): string
+    private function generateSimpleContent(array $sentences): string
     {
-        $items = [];
+        $content = [];
         $seen = [];
-        $rawTexts = [];
 
-        // First, collect raw sentence texts to extract numbered lists
-        foreach (array_slice($sentences, 0, 15) as $sentenceData) {
-            $rawTexts[] = $sentenceData['text'];
-        }
+        foreach (array_slice($sentences, 0, 8) as $sentenceData) {
+            $text = trim($sentenceData['text']);
+            $textLower = strtolower($text);
 
-        // Combine texts to look for numbered lists across sentence boundaries
-        $combinedText = implode(' ', $rawTexts);
-
-        // Extract numbered list items (e.g., "1. Service Name - description")
-        if (preg_match_all('/(?:^|\s)(\d+\.\s+[^0-9]+?)(?=\s+\d+\.|$)/', $combinedText, $matches, PREG_SET_ORDER)) {
-            foreach ($matches as $match) {
-                $item = trim($match[1]);
-                // Clean up the item - remove number prefix and normalize
-                $item = preg_replace('/^\d+\.\s*/', '', $item);
-                $item = trim($item);
-
-                // Split on dash if present (e.g., "Service Name - description")
-                if (preg_match('/^(.+?)\s*-\s*(.+)$/', $item, $parts)) {
-                    $serviceName = trim($parts[1]);
-                    $description = trim($parts[2]);
-                    $item = $serviceName . ' - ' . $description;
-                }
-
-                // Remove trailing punctuation that might have been attached
-                $item = rtrim($item, '.,;');
-
-                if (!empty($item) && strlen($item) > 5) {
-                    $itemLower = strtolower($item);
-                    if (!in_array($itemLower, $seen)) {
-                        $items[] = $item;
-                        $seen[] = $itemLower;
-                    }
-                }
+            // Skip duplicates and very short content
+            if (in_array($textLower, $seen) || strlen($text) < 10) {
+                continue;
             }
+            $seen[] = $textLower;
+            $content[] = $text;
         }
 
-        // If no numbered lists found, try extracting from individual sentences
-        if (empty($items)) {
-            foreach (array_slice($sentences, 0, 10) as $sentenceData) {
-                $text = trim($sentenceData['text']);
-
-                // Skip duplicates
-                $textLower = strtolower($text);
-                if (in_array($textLower, $seen)) {
-                    continue;
-                }
-                $seen[] = $textLower;
-
-                // Extract numbered items (1., 2., etc.)
-                if (preg_match('/^(\d+\.\s*.+?)(?:\.|$)/', $text, $matches)) {
-                    $item = trim($matches[1]);
-                    $item = preg_replace('/^\d+\.\s*/', '', $item);
-                    if (!empty($item) && strlen($item) > 10) {
-                        $items[] = $item;
-                    }
-                }
-                // Extract bullet points
-                elseif (preg_match('/^[\-•]\s*(.+)/', $text, $matches)) {
-                    $item = trim($matches[1]);
-                    if (!empty($item) && strlen($item) > 10) {
-                        $items[] = $item;
-                    }
-                }
-                // Accept well-formed sentences
-                elseif (strlen($text) > 20 && strlen($text) < 250 && !preg_match('/^(?:yes|no|maybe|perhaps)/i', $text)) {
-                    $items[] = $this->cleanSentence($text);
-                }
-            }
+        if (empty($content)) {
+            return !empty($sentences) ? $sentences[0]['text'] : '';
         }
 
-        if (empty($items)) {
-            // Fallback to first sentence
-            return !empty($sentences) ? $this->cleanSentence($sentences[0]['text']) : '';
-        }
-
-        // Format items with proper spacing and structure
-        if (count($items) === 1) {
-            return $items[0];
-        }
-
-        // Format as structured list with newlines for better readability
-        if (count($items) <= 2) {
-            return implode(' and ', $items) . '.';
-        }
-
-        // For 3+ items, format with proper line breaks
-        $formattedItems = [];
-        foreach ($items as $index => $item) {
-            $formattedItems[] = ($index + 1) . '. ' . ucfirst($item);
-        }
-
-        return implode("\n", $formattedItems);
+        return implode("\n", $content);
     }
 
     /**
@@ -1519,120 +1420,6 @@ return new class extends VanillaModelContract {
         }
 
         return $result;
-    }
-
-    /**
-     * Generate specific information content (pricing, contact, location, etc.)
-     */
-    private function generateSpecificInfoContent(array $sentences, string $type, array $entities): string
-    {
-        $extracted = [];
-
-        // Type-specific extraction
-        switch ($type) {
-            case 'contact':
-                foreach ($entities['emails'] ?? [] as $email) {
-                    $extracted[] = "Email: " . $email;
-                }
-                foreach ($entities['phones'] ?? [] as $phone) {
-                    $extracted[] = "Phone: " . $phone;
-                }
-                foreach ($entities['urls'] ?? [] as $url) {
-                    $extracted[] = "Website: " . $url;
-                }
-                break;
-
-            case 'pricing':
-                foreach ($entities['prices'] ?? [] as $price) {
-                    $extracted[] = $price;
-                }
-                break;
-
-            case 'location':
-                // First, try to extract from sentences with headquarters/location keywords
-                foreach ($sentences as $sentenceData) {
-                    $text = $sentenceData['text'];
-                    $textLower = strtolower($text);
-
-                    // Check if this sentence has location-related keywords
-                    if (preg_match('/\b(?:headquarters?|headquartered|located|location|office|address)\b/i', $textLower)) {
-                        // Try to extract the location info
-
-                        // Pattern: "headquartered in [city, state]"
-                        if (preg_match('/headquartered\s+in\s+([^,.]+(?:,\s*[^,.]+)?)/i', $text, $matches)) {
-                            $extracted[] = trim($matches[1]);
-                        }
-                        // Pattern: "located in/at [address]"
-                        elseif (preg_match('/located\s+(?:in|at)\s+([^.]+)/i', $text, $matches)) {
-                            $extracted[] = trim($matches[1]);
-                        }
-                        // If no specific extraction but has location keywords, use the sentence
-                        elseif (empty($extracted)) {
-                            $extracted[] = $this->cleanSentence($text);
-                        }
-                    }
-
-                    // Look for full address patterns (e.g., "123 Innovation Drive, Suite 500, San Francisco, CA 94105")
-                    if (preg_match('/\d+\s+[A-Z][a-z]+(?:\s+[A-Za-z]+)*(?:,\s*(?:Suite|Ste|Floor|Fl|#)?\s*\d*)?(?:,\s*[A-Za-z\s]+)?(?:,\s*(?:CA|NY|TX|FL)\s*\d{5})?/i', $text, $matches)) {
-                        $address = trim($matches[0]);
-                        if (strlen($address) > 10 && !in_array($address, $extracted)) {
-                            $extracted[] = $address;
-                        }
-                    }
-
-                    // Look for city/state patterns (e.g., "San Francisco, California")
-                    if (preg_match('/(?:San\s+Francisco|New\s+York|London|Tokyo)(?:[^.]*?(?:,\s*(?:CA|California|NY|New\s+York))?)?/i', $text, $matches)) {
-                        $location = trim($matches[0]);
-                        // Only add if not already present and substantial
-                        if (strlen($location) > 5 && !in_array($location, $extracted)) {
-                            // Check if we already have this info in another extracted item
-                            $isDuplicate = false;
-                            foreach ($extracted as $existing) {
-                                if (stripos($existing, $location) !== false) {
-                                    $isDuplicate = true;
-                                    break;
-                                }
-                            }
-                            if (!$isDuplicate) {
-                                $extracted[] = $location;
-                            }
-                        }
-                    }
-
-                    // If we have enough location info, break
-                    if (count($extracted) >= 2) {
-                        break;
-                    }
-                }
-
-                // If no specific extraction worked, use the highest-scoring sentence mentioning location
-                if (empty($extracted) && !empty($sentences)) {
-                    foreach ($sentences as $sentenceData) {
-                        $text = $sentenceData['text'];
-                        if (preg_match('/\b(?:headquarters?|headquartered|office|address|located|san\s+francisco|california)\b/i', $text)) {
-                            $extracted[] = $this->cleanSentence($text);
-                            break;
-                        }
-                    }
-                }
-
-                // Final fallback: just use the top-scoring sentence
-                if (empty($extracted) && !empty($sentences)) {
-                    $extracted[] = $this->cleanSentence($sentences[0]['text']);
-                }
-                break;
-        }
-
-        if (!empty($extracted)) {
-            // For location, join with proper formatting
-            if ($type === 'location') {
-                return implode('. ', array_unique($extracted));
-            }
-            return implode(', ', array_unique($extracted)) . '.';
-        }
-
-        // Fallback to best sentence
-        return !empty($sentences) ? $this->cleanSentence($sentences[0]['text']) : '';
     }
 
     /**
@@ -2057,20 +1844,12 @@ return new class extends VanillaModelContract {
             'how',
             'which',
             'why',
-            // Company-related terms
+            // General business terms
             'company',
             'founded',
             'mission',
             'values',
-            'culture',
-            'benefits',
-            // Geographic terms
-            'san',
-            'francisco',
-            'california',
-            'york',
-            'london',
-            'tokyo',
+            'about',
         ];
 
         // Remove stop words if requested

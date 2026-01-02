@@ -140,7 +140,9 @@ class DocumentLoader
                     continue;
                 }
 
-                $testChunk = trim($currentChunk . ' ' . $sentence);
+                // Use newline to join sentences to preserve document structure
+                $separator = "\n";
+                $testChunk = trim($currentChunk . $separator . $sentence);
                 $testLength = strlen($testChunk);
 
                 // If adding this sentence would exceed chunk size
@@ -172,7 +174,7 @@ class DocumentLoader
 
                     // Calculate overlap - use fewer sentences for less redundancy
                     $overlapSentences = $this->getOverlapSentences($currentSentences, min($this->chunkOverlap, 30));
-                    $overlapText = implode(' ', $overlapSentences);
+                    $overlapText = implode("\n", $overlapSentences);
 
                     // Avoid using same overlap text repeatedly
                     if ($overlapText === $lastOverlapText) {
@@ -182,7 +184,7 @@ class DocumentLoader
                     $lastOverlapText = $overlapText;
 
                     // Start new chunk with overlap
-                    $currentChunk = trim($overlapText . ' ' . $sentence);
+                    $currentChunk = trim($overlapText . "\n" . $sentence);
                     $currentSentences = array_merge($overlapSentences, [$sentence]);
                 } else {
                     // Add sentence to current chunk
@@ -304,8 +306,9 @@ class DocumentLoader
      */
     private function splitIntoSentences($text)
     {
-        // Normalize whitespace
-        $text = preg_replace('/\s+/', ' ', trim($text));
+        // Preserve newlines by replacing them with a marker
+        $text = str_replace(["\r\n", "\r"], "\n", $text);
+        $text = preg_replace('/[ \t]+/', ' ', trim($text)); // Only normalize spaces/tabs, NOT newlines
 
         if (empty($text)) {
             return [];
@@ -360,34 +363,27 @@ class DocumentLoader
         // First, protect URLs and emails
         $text = preg_replace_callback(
             '/(https?:\/\/[^\s]+|www\.[^\s]+|[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/',
-            function ($matches) {
-                return str_replace(['.', '!', '?'], ['[DOT]', '[EXCL]', '[QUEST]'], $matches[0]);
-            },
+            fn($matches) => str_replace(['.', '!', '?'], ['[DOT]', '[EXCL]', '[QUEST]'], $matches[0]),
             $text
         );
 
         // Protect decimal numbers and currency
-        $text = preg_replace_callback('/(\d+\.\d+|\$\d+\.\d+)/', function ($m) {
-            return str_replace('.', '[DOT]', $m[0]);
-        }, $text);
+        $text = preg_replace_callback('/(\d+\.\d+|\$\d+\.\d+)/', fn($m) => str_replace('.', '[DOT]', $m[0]), $text);
 
         // Protect abbreviations (case-insensitive)
         $abbrevPattern = '/\b(' . implode('|', array_map('preg_quote', $abbreviations)) . ')\./i';
-        $text = preg_replace_callback($abbrevPattern, function ($m) {
-            return str_replace('.', '[DOT]', $m[0]);
-        }, $text);
+        $text = preg_replace_callback($abbrevPattern, fn($m) => str_replace('.', '[DOT]', $m[0]), $text);
 
-        // Now split on sentence endings
-        $sentences = preg_split('/(?<=[.!?])\s+(?=[A-Z]|$)/', $text, -1, PREG_SPLIT_NO_EMPTY);
+        // Now split on sentence endings OR newlines (newlines are semantic boundaries)
+        $sentences = preg_split('/(?<=[.!?])\s+(?=[A-Z])|(?<=\n)/', $text, -1, PREG_SPLIT_NO_EMPTY);
 
-        // Restore protected characters
+        // Restore protected characters and clean up
         $sentences = array_map(function ($sentence) {
-            return str_replace(['[DOT]', '[EXCL]', '[QUEST]'], ['.', '!', '?'], trim($sentence));
+            $sentence = str_replace(['[DOT]', '[EXCL]', '[QUEST]'], ['.', '!', '?'], trim($sentence));
+            return trim($sentence);
         }, $sentences);
 
         // Filter out empty sentences
-        return array_filter($sentences, function ($s) {
-            return !empty(trim($s));
-        });
+        return array_filter($sentences, fn($s) => !empty(trim($s)));
     }
 }
