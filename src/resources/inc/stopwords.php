@@ -76,7 +76,6 @@ return [
     'than',
     'too',
     'very',
-    // Additional common words that don't add semantic value
     'also',
     'just',
     'like',

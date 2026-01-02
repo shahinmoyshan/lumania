@@ -373,12 +373,55 @@ class VectorStore
         // Important short terms to always keep (tech terms, abbreviations)
         $keepShortTerms = ['ai', 'ml', 'ui', 'ux', 'go', 'js', 'db', 'os', 'it', 'qa', 'hr', 'pr', 'pm', 'vp', 'ceo', 'cto', 'cfo', 'api', 'aws', 'gcp', 'ios', 'sql', 'css', 'php', 'vue', 'mvp'];
 
-        $words = array_filter($words, function ($word) use ($stopWords, $keepShortTerms) {
+        // Important domain-specific terms that should never be filtered
+        $keepDomainTerms = [
+            // Location terms
+            'headquarters',
+            'headquartered',
+            'office',
+            'offices',
+            'location',
+            'locations',
+            'address',
+            'addresses',
+            // Business terms  
+            'services',
+            'service',
+            'products',
+            'product',
+            'pricing',
+            'price',
+            'contact',
+            'team',
+            'teams',
+            // Question-related words that help with context
+            'where',
+            'what',
+            'when',
+            'who',
+            'how',
+            'which',
+            'why',
+            // Company-related terms
+            'company',
+            'founded',
+            'mission',
+            'values',
+            'culture',
+            'benefits',
+        ];
+
+        $words = array_filter($words, function ($word) use ($stopWords, $keepShortTerms, $keepDomainTerms) {
             $word = trim($word);
             $len = strlen($word);
 
             // Always keep important short terms
             if (in_array($word, $keepShortTerms)) {
+                return true;
+            }
+
+            // Always keep domain-specific terms
+            if (in_array($word, $keepDomainTerms)) {
                 return true;
             }
 
